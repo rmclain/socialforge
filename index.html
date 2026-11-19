@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>SocialForge</title>
-<meta name="description" content="A native Mac studio that turns a folder of product photos and a CSV into a month of on-brand, scheduled Pins.">
+<meta name="description" content="A native Mac studio that turns product photos, clips, and a CSV into on-brand Pins, Reels, and Shorts, with your own ComfyUI for images, video, and music.">
 <link rel="icon" href="assets/icon.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
@@ -107,6 +107,12 @@ h2 { font-size: clamp(36px, 4.6vw, 56px); line-height: 1; letter-spacing: -.015e
 footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
 .spark { display: inline-block; animation: twinkle 2.4s ease-in-out infinite; }
 @keyframes twinkle { 50% { transform: rotate(18deg) scale(1.15); } }
+.signin { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); z-index: 10; width: min(560px, calc(100% - 32px));
+  background: var(--panel); color: var(--text); border: 1px solid var(--stroke); border-radius: 14px; padding: 18px 20px;
+  box-shadow: 0 20px 60px rgba(0,0,0,.4); display: none; }
+.signin h3 { margin: 0 0 6px; font-size: 16px; }
+.signin p { margin: 0 0 12px; color: var(--text2); font-size: 14px; }
+.signin.show { display: block; }
 @media (max-width: 860px) {
   .hero, .gallery, .honest, .install { grid-template-columns: 1fr; }
   .steps, .features { grid-template-columns: 1fr 1fr; }
@@ -134,9 +140,9 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
 
   <header class="hero">
     <div>
-      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source</span>
-      <h1 class="serif">A month of Pins,<br>forged in <em>one sitting</em>.</h1>
-      <p class="lede">Drop a folder of product photos and a CSV of links. SocialForge matches them, dresses each one in your brand template with real, editable type, plans the calendar, and publishes on schedule. You approve everything first.</p>
+      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source · version 0.3</span>
+      <h1 class="serif">Pins, Reels, and Shorts,<br>forged in <em>one sitting</em>.</h1>
+      <p class="lede">Drop in product photos, clips, music, and a CSV of links. SocialForge dresses every image and video in your brand template with real, editable type, makes backgrounds, clips, and songs with your own ComfyUI, plans the calendar, and posts from your Mac. You approve everything first.</p>
       <div class="ctas">
         <a class="btn primary" href="https://github.com/rmclain/socialforge/releases/latest">Download for Mac <span class="spark">✦</span></a>
         <a class="btn ghost" href="https://github.com/rmclain/socialforge">View the code</a>
@@ -155,22 +161,25 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
     <h2 class="serif">Folder in. Calendar out.</h2>
     <p class="sub">Never fill in sixty post forms again.</p>
     <div class="steps">
-      <div class="step"><div class="n">1</div><h3>Drop it all in</h3><p>Images and a CSV. Files are copied in; your originals are never touched. Ambiguous matches get flagged, never guessed.</p></div>
-      <div class="step"><div class="n">2</div><h3>Brand it</h3><p>Pick a template. Your colors, fonts, and logo snap in; headlines and prices stay real text you can edit.</p></div>
+      <div class="step"><div class="n">1</div><h3>Drop it all in</h3><p>Photos, clips, music, and a CSV. Files are copied in; your originals are never touched. Ambiguous matches get flagged, never guessed.</p></div>
+      <div class="step"><div class="n">2</div><h3>Brand it</h3><p>Pick a template. Your colors, fonts, and logo snap in; headlines and prices stay real text, on a still or over a video.</p></div>
       <div class="step"><div class="n">3</div><h3>Plan it</h3><p>One a day at 9, weekdays only, every four hours, or hand-picked dates. Daylight saving can't move your 9 AM.</p></div>
-      <div class="step"><div class="n">4</div><h3>Approve it</h3><p>Nothing publishes until you say so. Then your Mac does the posting, with retries and a receipt for every Pin.</p></div>
+      <div class="step"><div class="n">4</div><h3>Approve it</h3><p>Nothing publishes until you say so. Then your Mac posts, with retries and a receipt for every post. For TikTok and YouTube you get a ready-to-upload video.</p></div>
     </div>
   </section>
 
   <section id="tour">
     <h2 class="serif">Take the tour</h2>
     <p class="sub">Warm dark mode, crisp light mode, and a sidebar that knows where everything lives.</p>
-    <div class="shot"><img src="assets/bulk-dark.jpg" alt="Bulk Publisher: thirty images matched to a CSV, a queue of Pins, and the cadence panel" loading="lazy"></div>
+    <div class="shot"><img src="assets/studio-video-dark.jpg" alt="Creative Studio editing a 12-second TikTok video: layers, a product clip, a music track, a timeline, and which platforms the video fits" loading="lazy"></div>
+    <p class="fine">Creative Studio, video edition: a looping product clip, a music track that fades out, a headline that appears at two seconds, and a check against every platform's video rules. Export Video writes an MP4 with real fonts.</p>
     <div class="gallery" style="margin-top:20px">
-      <figure><div class="shot"><img src="assets/studio-dark.jpg" alt="Creative Studio with layers, a live headline, and smart resize" loading="lazy"></div><figcaption>Creative Studio: layers, real fonts, and every platform size from one design.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/calendar-dark.jpg" alt="Calendar month view with a Pin on every day" loading="lazy"></div><figcaption>The calendar: drag a Pin to another day; its time stays put.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/ai-video-crop.jpg" alt="AI Studio in Video mode with a prompt, workflow, aspect, and length" loading="lazy"></div><figcaption>AI Studio makes clips with your ComfyUI: pick the aspect and length, then drop the result straight onto a design.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/ai-music-crop.jpg" alt="AI Studio in Music mode with a style line and lyrics" loading="lazy"></div><figcaption>Music mode writes a song from a style line and your lyrics, ready to sit under a video.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/bulk-dark.jpg" alt="Bulk Publisher: images matched to a CSV, a queue of Pins, and the cadence panel" loading="lazy"></div><figcaption>Bulk Publisher: thirty photos and a CSV become a month of scheduled Pins.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/settings-publishing-dark.jpg" alt="Settings, Publishing: every platform with its status and video limits" loading="lazy"></div><figcaption>Every platform, with an honest status and its video rules.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/calendar-dark.jpg" alt="Calendar month view with a Pin on every day" loading="lazy"></div><figcaption>The calendar: drag a post to another day; its time stays put.</figcaption></figure>
       <figure><div class="shot"><img src="assets/brandKits-dark.jpg" alt="Brand kit with palette, fonts, voice, and templates" loading="lazy"></div><figcaption>Brand kits drive every template. Change a color once; everything follows.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/home-light.jpg" alt="Dashboard in light mode with up-next Pins and approvals" loading="lazy"></div><figcaption>The dashboard: what's next, what needs you, what happened.</figcaption></figure>
     </div>
   </section>
 
@@ -178,12 +187,38 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
     <h2 class="serif">Everything in the box</h2>
     <p class="sub">Built for people who post a lot and want it to look like them.</p>
     <div class="features">
-      <div class="feature"><div class="ico">🗂️</div><h3>Media Library</h3><p>Folders, HEIC, transparency, collections, duplicate detection by content hash, and resizing for each platform without stretching.</p></div>
+      <div class="feature"><div class="ico">🗂️</div><h3>Media Library</h3><p>Photos (HEIC and transparency too), video clips, and music. Collections, duplicate detection by content hash, and a player for every clip and track.</p></div>
       <div class="feature"><div class="ico">🎨</div><h3>Brand templates</h3><p>Editorial, Centered, Price card, or your own. Apply one to a hundred photos and get a hundred branded Pins.</p></div>
+      <div class="feature"><div class="ico">🎬</div><h3>Video studio</h3><p>Drop clips and music on the canvas, time each layer, and export an MP4 (H.264 and AAC) sized for TikTok, Reels, Shorts, Pinterest, and more.</p></div>
+      <div class="feature"><div class="ico">✨</div><h3>AI Studio</h3><p>Images, clips, and songs from your own ComfyUI, plus titles and descriptions from OpenAI, Anthropic, Gemini, or a local model. Type stays real text unless you ask the model for it.</p></div>
+      <div class="feature"><div class="ico">🧩</div><h3>Starter workflows</h3><p>Five ComfyUI workflows ship in the app: background image, image with words in it, vertical and square video, and music. <a href="https://github.com/rmclain/socialforge/tree/main/comfyui/workflows">Download them</a> for your own ComfyUI.</p></div>
+      <div class="feature"><div class="ico">📮</div><h3>Publishing</h3><p>Your Mac posts to Pinterest, Facebook Pages, Instagram, and Threads with your own developer apps, with retries and no double posts after a timeout.</p></div>
+      <div class="feature"><div class="ico">✍️</div><h3>Composer</h3><p>Write once and get a version per platform, with its own preview and limits, including video rules.</p></div>
       <div class="feature"><div class="ico">✂️</div><h3>On-device magic</h3><p>Remove backgrounds, smart-crop around the subject, upscale, and tone to your brand color. Your photos never leave the Mac.</p></div>
-      <div class="feature"><div class="ico">✍️</div><h3>Composer</h3><p>Write once and get Pinterest, Facebook, X, and LinkedIn versions with their own previews and limits.</p></div>
-      <div class="feature"><div class="ico">✨</div><h3>AI that knows its place</h3><p>Bring your own OpenAI, Anthropic, Gemini, or local model for titles. Use ComfyUI for backgrounds. Type is never left to the model.</p></div>
       <div class="feature"><div class="ico">⚡</div><h3>Automations</h3><p>Watch a folder, resize, brand, write, and queue. Every run stops for your approval.</p></div>
+    </div>
+  </section>
+
+  <section id="platforms">
+    <h2 class="serif">Where it posts</h2>
+    <p class="sub">Posting goes through developer apps you create on each platform, so your keys stay in your Keychain.</p>
+    <div class="honest">
+      <div class="col">
+        <h3>Posts from your Mac</h3>
+        <ul>
+          <li><b>Pinterest</b>: image Pins, scheduled in bulk</li>
+          <li><b>Facebook Pages</b>: text, photos, and Reels</li>
+          <li><b>Instagram</b>: Reels upload straight from your Mac; photos need a public storage bucket (Cloudflare R2 or any S3-compatible one)</li>
+          <li><b>Threads</b>: text posts; photos and video use the same storage bucket</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>Export or drafts</h3>
+        <ul>
+          <li><b>TikTok</b> and <b>YouTube Shorts</b>: SocialForge makes the video at the right size and length; you upload it. Their APIs keep posts private until an app passes their audit.</li>
+          <li><b>X</b> and <b>LinkedIn</b>: saved as drafts for now</li>
+        </ul>
+      </div>
     </div>
   </section>
 
@@ -194,7 +229,8 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
         <h3>Works today</h3>
         <ul>
           <li>The whole bulk Pinterest flow, end to end, with a built-in mock account to try it safely</li>
-          <li>Publishing from your Mac, with retries and no double posts after a timeout</li>
+          <li>Video designs with clips, music, and timed layers, exported as MP4 and checked by automated tests</li>
+          <li>AI Studio's image, image-with-text, video, and music starter workflows, run end to end on a real ComfyUI server</li>
           <li>Brand templates, smart resize, analytics from your real data, campaigns with UTM links</li>
           <li>Automatic updates from these GitHub releases</li>
         </ul>
@@ -202,10 +238,10 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
       <div class="col">
         <h3>Still on the workbench</h3>
         <ul>
-          <li>Live Pinterest needs your own Pinterest developer app, and hasn't been verified against the live API yet</li>
-          <li>Facebook, LinkedIn, and X save as drafts for now</li>
-          <li>A Mac can't post while it's asleep: due Pins go out when it wakes</li>
-          <li>AI and ComfyUI connections are built to their docs; bring your own key and test it</li>
+          <li>Live posting to Pinterest, Facebook, Instagram, and Threads is built to their docs and tested against stand-ins, but hasn't made its first real post yet</li>
+          <li>TikTok and YouTube are export-only, and X and LinkedIn are drafts</li>
+          <li>A Mac can't post while it's asleep: due posts go out when it wakes</li>
+          <li>The cloud AI connections are built to their docs; bring your own key and test it</li>
         </ul>
       </div>
     </div>
@@ -220,6 +256,7 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
           <li>Unzip it and drag SocialForge to Applications.</li>
           <li>Open it. Future versions arrive on their own.</li>
         </ol>
+        <p class="fine">For AI: point SocialForge at your ComfyUI (Settings › ComfyUI) and add the starter workflows from AI Studio › Workflow. For posting: <a href="https://github.com/rmclain/socialforge/blob/main/docs/META_SETUP.md">set up Facebook, Instagram, and Threads</a>.</p>
         <p class="fine">Requires macOS 26 or later. One download runs on Apple silicon and Intel.</p>
       </div>
       <a class="btn primary" href="https://github.com/rmclain/socialforge/releases/latest">Download <span class="spark">✦</span></a>
@@ -233,5 +270,28 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
     <span>Instrument Serif by The Instrument Serif Project (SIL OFL)</span>
   </footer>
 </div>
+<div class="signin" id="signin" role="status">
+  <h3 id="signin-title">Signed in to Threads</h3>
+  <p id="signin-text">Copy this page's address and paste it into SocialForge › Settings › Publishing › Finish connecting. The code in it works once and expires in minutes.</p>
+  <button class="btn primary" id="signin-copy" type="button">Copy address</button>
+</div>
+<script>
+// Threads sends people back here after they sign in (SocialForge's redirect). Help them hand the address to the app.
+(function () {
+  var q = new URLSearchParams(location.search);
+  if (!q.has("code") && !q.has("error")) return;
+  var box = document.getElementById("signin");
+  if (q.has("error")) {
+    document.getElementById("signin-title").textContent = "Threads sign-in was not completed";
+    document.getElementById("signin-text").textContent = q.get("error_description") || "Try Connect Threads again in SocialForge.";
+    document.getElementById("signin-copy").style.display = "none";
+  }
+  document.getElementById("signin-copy").addEventListener("click", function () {
+    var b = this;
+    navigator.clipboard.writeText(location.href).then(function () { b.textContent = "Copied. Paste it into SocialForge"; });
+  });
+  box.className += " show";
+})();
+</script>
 </body>
 </html>
