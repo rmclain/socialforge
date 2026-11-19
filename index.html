@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SocialForge</title>
+<meta name="description" content="A native Mac studio that turns a folder of product photos and a CSV into a month of on-brand, scheduled Pins.">
+<link rel="icon" href="assets/icon.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&display=swap" rel="stylesheet">
+<style>
+:root {
+  --bg: #0b0b10; --panel: #19191c; --card: rgba(255,255,255,.045); --stroke: rgba(255,255,255,.08);
+  --text: #ececef; --text2: #9c9ca6; --accent: #ff8a5c; --accent-fill: #ff7a45; --on-accent: #1d0d05; --green: #3ddc84;
+}
+@media (prefers-color-scheme: light) {
+  :root { --bg: #f4efe9; --panel: #fbf8f5; --card: rgba(0,0,0,.035); --stroke: rgba(0,0,0,.08); --text: #1c1b1f; --text2: #6b6a72; --accent: #e8662f; --green: #1f9d57; }
+}
+* { box-sizing: border-box; }
+html { scroll-behavior: smooth; }
+body {
+  margin: 0; color: var(--text); background: var(--bg);
+  font: 16px/1.55 -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", system-ui, sans-serif;
+  -webkit-font-smoothing: antialiased; overflow-x: hidden;
+}
+.glow {
+  position: fixed; inset: 0; z-index: -1; pointer-events: none;
+  background:
+    radial-gradient(55% 45% at 10% 12%, rgba(255,110,60,.38), transparent 70%),
+    radial-gradient(45% 55% at 92% 78%, rgba(110,90,255,.28), transparent 70%),
+    radial-gradient(35% 35% at 60% 8%, rgba(30,190,170,.18), transparent 70%);
+}
+a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.wrap { max-width: 1120px; margin: 0 auto; padding: 0 16px; }
+nav { display: flex; align-items: center; gap: 12px; padding: 22px 0; }
+nav img { width: 36px; height: 36px; }
+nav .name { font-weight: 650; letter-spacing: -.01em; }
+nav .spacer { flex: 1; }
+nav a.small { color: var(--text2); font-size: 14px; margin-left: 18px; }
+.serif { font-family: "Instrument Serif", ui-serif, Georgia, serif; font-weight: 400; }
+.hero { display: grid; grid-template-columns: 1.15fr .85fr; gap: 40px; align-items: center; padding: 48px 0 72px; }
+.eyebrow { display: inline-flex; gap: 8px; align-items: center; font-size: 13px; color: var(--text2); background: var(--card); border: 1px solid var(--stroke); padding: 6px 12px; border-radius: 999px; }
+.eyebrow b { color: var(--green); font-weight: 600; }
+h1 { font-size: clamp(48px, 7vw, 92px); line-height: .95; letter-spacing: -.02em; margin: 22px 0 18px; }
+h1 em { color: var(--accent); }
+.lede { font-size: 19px; color: var(--text2); max-width: 34em; }
+.ctas { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 30px; }
+.btn { display: inline-flex; align-items: center; gap: 8px; padding: 13px 22px; border-radius: 10px; font-weight: 650; font-size: 15px; transition: transform .15s ease, box-shadow .15s ease; }
+.btn:hover { text-decoration: none; transform: translateY(-2px); }
+.btn.primary { background: var(--accent-fill); color: var(--on-accent); box-shadow: 0 10px 30px rgba(255,122,69,.35); }
+.btn.ghost { background: var(--card); color: var(--text); border: 1px solid var(--stroke); }
+.fine { font-size: 13px; color: var(--text2); margin-top: 14px; }
+
+/* The fanned Pins: a little deck that deals itself */
+.deck { position: relative; height: 440px; }
+.pin {
+  position: absolute; left: 50%; top: 50%; width: 190px; height: 285px; border-radius: 18px; overflow: hidden;
+  box-shadow: 0 24px 60px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.08) inset;
+  transform-origin: 50% 120%; animation: deal 1.1s cubic-bezier(.2,.8,.2,1) both;
+}
+.pin img { width: 100%; height: 100%; object-fit: cover; }
+.pin .tag { position: absolute; left: 10px; bottom: 10px; font: 600 12px/1 -apple-system, system-ui; color: #fff; background: rgba(0,0,0,.5); padding: 6px 8px; border-radius: 6px; }
+.pin .save { position: absolute; right: 10px; top: 10px; font: 700 12px/1 -apple-system, system-ui; color: #fff; background: #e60023; padding: 7px 10px; border-radius: 999px; }
+.pin:nth-child(1) { --r: -18deg; --x: -150px; animation-delay: .05s; }
+.pin:nth-child(2) { --r: -6deg; --x: -55px; animation-delay: .15s; }
+.pin:nth-child(3) { --r: 6deg; --x: 45px; animation-delay: .25s; }
+.pin:nth-child(4) { --r: 18deg; --x: 140px; animation-delay: .35s; }
+.pin { transform: translate(calc(-50% + var(--x)), -50%) rotate(var(--r)); }
+.deck:hover .pin { transform: translate(calc(-50% + var(--x) * 1.18), -54%) rotate(calc(var(--r) * 1.25)); transition: transform .4s cubic-bezier(.2,.8,.2,1); }
+@keyframes deal { from { opacity: 0; transform: translate(-50%, 40%) rotate(0deg) scale(.8); } }
+.pin.bg1 { background: linear-gradient(165deg, #8fb3c9, #42607a); }
+.pin.bg2 { background: linear-gradient(165deg, #d8b08c, #8a5a3c); }
+.pin.bg3 { background: linear-gradient(165deg, #a9c79a, #4f7a52); }
+.pin.bg4 { background: linear-gradient(165deg, #c9a0b8, #7a4f68); }
+.pin .card { position: absolute; inset: auto 14px 38px 14px; color: #fff; }
+.pin .card .h { font-family: "Instrument Serif", Georgia, serif; font-size: 30px; line-height: .98; text-shadow: 0 2px 10px rgba(0,0,0,.25); }
+.pin .card .p { margin-top: 10px; display: inline-flex; gap: 8px; align-items: center; background: #fff; color: #222; border-radius: 999px; font: 600 12px/1 -apple-system, system-ui; padding: 7px 12px; }
+.pin .blob { position: absolute; left: 50%; top: 34%; width: 70px; height: 92px; border-radius: 18px; transform: translateX(-50%); background: linear-gradient(160deg, rgba(255,255,255,.95), rgba(255,255,255,.6)); box-shadow: 0 18px 20px -8px rgba(0,0,0,.35); }
+
+section { padding: 64px 0; }
+h2 { font-size: clamp(36px, 4.6vw, 56px); line-height: 1; letter-spacing: -.015em; margin: 0 0 12px; }
+.sub { color: var(--text2); font-size: 18px; max-width: 40em; margin: 0 0 32px; }
+.steps { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; }
+.step { background: var(--card); border: 1px solid var(--stroke); border-radius: 14px; padding: 20px; }
+.step .n { font-family: "Instrument Serif", Georgia, serif; font-size: 44px; color: var(--accent); line-height: 1; }
+.step h3 { margin: 10px 0 6px; font-size: 17px; }
+.step p { margin: 0; color: var(--text2); font-size: 14.5px; }
+.shot { border-radius: 14px; overflow: hidden; border: 1px solid var(--stroke); box-shadow: 0 30px 80px rgba(0,0,0,.35); background: var(--panel); }
+.shot img { display: block; width: 100%; height: auto; }
+.gallery { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
+.gallery figure { margin: 0; }
+.gallery figcaption { color: var(--text2); font-size: 14px; margin-top: 10px; }
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+.feature { background: var(--card); border: 1px solid var(--stroke); border-radius: 14px; padding: 20px; transition: transform .2s ease, border-color .2s ease; }
+.feature:hover { transform: translateY(-3px); border-color: rgba(255,122,69,.45); }
+.feature .ico { font-size: 22px; }
+.feature h3 { margin: 10px 0 6px; font-size: 16.5px; }
+.feature p { margin: 0; color: var(--text2); font-size: 14.5px; }
+.honest { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.honest .col { background: var(--card); border: 1px solid var(--stroke); border-radius: 14px; padding: 22px; }
+.honest h3 { margin: 0 0 10px; font-size: 16px; }
+.honest ul { margin: 0; padding-left: 18px; color: var(--text2); font-size: 14.5px; }
+.honest li { margin: 6px 0; }
+.install { background: linear-gradient(135deg, rgba(255,122,69,.18), rgba(110,90,255,.12)); border: 1px solid var(--stroke); border-radius: 18px; padding: 36px; display: grid; grid-template-columns: 1fr auto; gap: 24px; align-items: center; }
+.install ol { margin: 10px 0 0; padding-left: 20px; color: var(--text2); }
+footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: flex; gap: 18px; flex-wrap: wrap; }
+.spark { display: inline-block; animation: twinkle 2.4s ease-in-out infinite; }
+@keyframes twinkle { 50% { transform: rotate(18deg) scale(1.15); } }
+@media (max-width: 860px) {
+  .hero, .gallery, .honest, .install { grid-template-columns: 1fr; }
+  .steps, .features { grid-template-columns: 1fr 1fr; }
+  .deck { height: 380px; transform: scale(.85); }
+}
+@media (max-width: 520px) {
+  .steps, .features { grid-template-columns: 1fr; }
+  .deck { transform: scale(.7); margin: -40px 0; }
+  nav a.small { display: none; }
+}
+@media (prefers-reduced-motion: reduce) { .pin, .spark { animation: none; } }
+</style>
+</head>
+<body>
+<div class="glow"></div>
+<div class="wrap">
+  <nav>
+    <img src="assets/icon.png" alt="">
+    <span class="name">SocialForge</span>
+    <span class="spacer"></span>
+    <a class="small" href="#how">How it works</a>
+    <a class="small" href="#tour">Tour</a>
+    <a class="small" href="https://github.com/rmclain/socialforge">GitHub</a>
+  </nav>
+
+  <header class="hero">
+    <div>
+      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source</span>
+      <h1 class="serif">A month of Pins,<br>forged in <em>one sitting</em>.</h1>
+      <p class="lede">Drop a folder of product photos and a CSV of links. SocialForge matches them, dresses each one in your brand template with real, editable type, plans the calendar, and publishes on schedule. You approve everything first.</p>
+      <div class="ctas">
+        <a class="btn primary" href="https://github.com/rmclain/socialforge/releases/latest">Download for Mac <span class="spark">✦</span></a>
+        <a class="btn ghost" href="https://github.com/rmclain/socialforge">View the code</a>
+      </div>
+      <p class="fine">Signed with Developer ID and notarized by Apple. New versions arrive from GitHub releases, and SocialForge asks before installing.</p>
+    </div>
+    <div class="deck" aria-hidden="true">
+      <div class="pin bg1"><span class="save">Save</span><div class="blob"></div><div class="card"><div class="h">Slow mornings, warmer mugs.</div><span class="p">$38 · Shop now</span></div><span class="tag">Mon 9:00</span></div>
+      <div class="pin bg2"><span class="save">Save</span><div class="blob"></div><div class="card"><div class="h">Linen, but make it cozy.</div><span class="p">$120 · Shop</span></div><span class="tag">Tue 9:00</span></div>
+      <div class="pin bg3"><span class="save">Save</span><div class="blob"></div><div class="card"><div class="h">Candlelight season.</div><span class="p">$24 · See the set</span></div><span class="tag">Wed 9:00</span></div>
+      <div class="pin bg4"><span class="save">Save</span><div class="blob"></div><div class="card"><div class="h">Small batch, big glow.</div><span class="p">$36 · Shop now</span></div><span class="tag">Thu 9:00</span></div>
+    </div>
+  </header>
+
+  <section id="how">
+    <h2 class="serif">Folder in. Calendar out.</h2>
+    <p class="sub">Never fill in sixty post forms again.</p>
+    <div class="steps">
+      <div class="step"><div class="n">1</div><h3>Drop it all in</h3><p>Images and a CSV. Files are copied in; your originals are never touched. Ambiguous matches get flagged, never guessed.</p></div>
+      <div class="step"><div class="n">2</div><h3>Brand it</h3><p>Pick a template. Your colors, fonts, and logo snap in; headlines and prices stay real text you can edit.</p></div>
+      <div class="step"><div class="n">3</div><h3>Plan it</h3><p>One a day at 9, weekdays only, every four hours, or hand-picked dates. Daylight saving can't move your 9 AM.</p></div>
+      <div class="step"><div class="n">4</div><h3>Approve it</h3><p>Nothing publishes until you say so. Then your Mac does the posting, with retries and a receipt for every Pin.</p></div>
+    </div>
+  </section>
+
+  <section id="tour">
+    <h2 class="serif">Take the tour</h2>
+    <p class="sub">Warm dark mode, crisp light mode, and a sidebar that knows where everything lives.</p>
+    <div class="shot"><img src="assets/bulk-dark.jpg" alt="Bulk Publisher: thirty images matched to a CSV, a queue of Pins, and the cadence panel" loading="lazy"></div>
+    <div class="gallery" style="margin-top:20px">
+      <figure><div class="shot"><img src="assets/studio-dark.jpg" alt="Creative Studio with layers, a live headline, and smart resize" loading="lazy"></div><figcaption>Creative Studio: layers, real fonts, and every platform size from one design.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/calendar-dark.jpg" alt="Calendar month view with a Pin on every day" loading="lazy"></div><figcaption>The calendar: drag a Pin to another day; its time stays put.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/brandKits-dark.jpg" alt="Brand kit with palette, fonts, voice, and templates" loading="lazy"></div><figcaption>Brand kits drive every template. Change a color once; everything follows.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/home-light.jpg" alt="Dashboard in light mode with up-next Pins and approvals" loading="lazy"></div><figcaption>The dashboard: what's next, what needs you, what happened.</figcaption></figure>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="serif">Everything in the box</h2>
+    <p class="sub">Built for people who post a lot and want it to look like them.</p>
+    <div class="features">
+      <div class="feature"><div class="ico">🗂️</div><h3>Media Library</h3><p>Folders, HEIC, transparency, collections, duplicate detection by content hash, and resizing for each platform without stretching.</p></div>
+      <div class="feature"><div class="ico">🎨</div><h3>Brand templates</h3><p>Editorial, Centered, Price card, or your own. Apply one to a hundred photos and get a hundred branded Pins.</p></div>
+      <div class="feature"><div class="ico">✂️</div><h3>On-device magic</h3><p>Remove backgrounds, smart-crop around the subject, upscale, and tone to your brand color. Your photos never leave the Mac.</p></div>
+      <div class="feature"><div class="ico">✍️</div><h3>Composer</h3><p>Write once and get Pinterest, Facebook, X, and LinkedIn versions with their own previews and limits.</p></div>
+      <div class="feature"><div class="ico">✨</div><h3>AI that knows its place</h3><p>Bring your own OpenAI, Anthropic, Gemini, or local model for titles. Use ComfyUI for backgrounds. Type is never left to the model.</p></div>
+      <div class="feature"><div class="ico">⚡</div><h3>Automations</h3><p>Watch a folder, resize, brand, write, and queue. Every run stops for your approval.</p></div>
+    </div>
+  </section>
+
+  <section>
+    <h2 class="serif">Straight talk</h2>
+    <div class="honest">
+      <div class="col">
+        <h3>Works today</h3>
+        <ul>
+          <li>The whole bulk Pinterest flow, end to end, with a built-in mock account to try it safely</li>
+          <li>Publishing from your Mac, with retries and no double posts after a timeout</li>
+          <li>Brand templates, smart resize, analytics from your real data, campaigns with UTM links</li>
+          <li>Automatic updates from these GitHub releases</li>
+        </ul>
+      </div>
+      <div class="col">
+        <h3>Still on the workbench</h3>
+        <ul>
+          <li>Live Pinterest needs your own Pinterest developer app, and hasn't been verified against the live API yet</li>
+          <li>Facebook, LinkedIn, and X save as drafts for now</li>
+          <li>A Mac can't post while it's asleep: due Pins go out when it wakes</li>
+          <li>AI and ComfyUI connections are built to their docs; bring your own key and test it</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <div class="install">
+      <div>
+        <h2 class="serif" style="font-size:42px">Get SocialForge</h2>
+        <ol>
+          <li>Download the latest zip from Releases.</li>
+          <li>Unzip it and drag SocialForge to Applications.</li>
+          <li>Open it. Future versions arrive on their own.</li>
+        </ol>
+        <p class="fine">Requires macOS 26 or later. One download runs on Apple silicon and Intel.</p>
+      </div>
+      <a class="btn primary" href="https://github.com/rmclain/socialforge/releases/latest">Download <span class="spark">✦</span></a>
+    </div>
+  </section>
+
+  <footer>
+    <span>SocialForge</span>
+    <a href="https://github.com/rmclain/socialforge">Source</a>
+    <a href="https://github.com/rmclain/socialforge/releases">Releases</a>
+    <span>Instrument Serif by The Instrument Serif Project (SIL OFL)</span>
+  </footer>
+</div>
+</body>
+</html>
