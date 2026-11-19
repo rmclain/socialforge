@@ -26,6 +26,10 @@ if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then echo "$tag is alr
 tools/package.sh
 zip="dist/SocialForge-$version.zip"
 [[ -f "$zip" ]] || { echo "no $zip"; exit 1; }
+build=$(unzip -p "$zip" SocialForge.app/Contents/Info.plist | plutil -extract CFBundleVersion raw -)
+# The fingerprint ForgeDeck's Version URL reads from the GitHub Page (no secrets).
+printf '{"commit_sha":"%s","version":"%s","build_id":"%s","built_at":"%s"}\n' \
+  "$(git rev-parse HEAD)" "$tag" "$build" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > dist/forgedeck-release.json
 
 notes_file=$(mktemp)
 if [[ -n "$notes" ]]; then
@@ -41,4 +45,6 @@ else
   } > "$notes_file"
 fi
 gh release create "$tag" "$zip" --repo "$repo" --target main --title "SocialForge $version" --notes-file "$notes_file" "${draft[@]}"
+git tag -f "$tag" HEAD >/dev/null
+tools/publish-site.sh
 echo "released $tag on $repo"

@@ -11,3 +11,4 @@ coverage/
 .pgdata/
 .data/
 apps/mac/Resources/
+forgedeck-release.json
