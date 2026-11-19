@@ -35,8 +35,20 @@ enum Snapshot {
                 NSApp.appearance = NSAppearance(named: mode == "light" ? .aqua : .darkAqua)
                 for page in AppPage.allCases where only?.contains(page.rawValue) ?? true {
                     model.page = page
-                    if page == .studio, model.studio.document == nil, let d = SeedData.sampleDesign(model) { model.studio.open(d, designID: nil) }
+                    if page == .studio, model.studio.document == nil {
+                        // APP_STUDIO_VIDEO=1 opens a TikTok video design with a clip and music.
+                        if env["APP_STUDIO_VIDEO"] == "1", let d = await SeedData.sampleVideoDesign(model) {
+                            model.studio.open(d, designID: nil)
+                            model.studio.time = 2.5
+                            model.studio.selectedLayer = nil
+                        } else if let d = SeedData.sampleDesign(model) { model.studio.open(d, designID: nil) }
+                    }
                     if page == .calendar || page == .bulk { model.publicationSelection = [] }
+                    // APP_AI_MODE=video or music shows AI Studio in that mode, with the starter workflows added.
+                    if page == .ai, let m = env["APP_AI_MODE"], let mode = AIStudioModel.Mode.allCases.first(where: { $0.rawValue.lowercased() == m }) {
+                        ComfyWorkflowIO.addStarters(model: model)
+                        model.aiStudio.mode = mode
+                    }
                     try? await Task.sleep(for: .seconds(page == .studio ? 1.6 : 1.0))
                     capture(to: "\(dir)/\(page.rawValue)-\(mode).png")
                 }

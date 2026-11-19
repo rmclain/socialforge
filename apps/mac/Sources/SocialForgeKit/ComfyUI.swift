@@ -62,6 +62,14 @@ public struct ComfyMapping: Codable, Sendable, Equatable {
     public var height: ComfyInputRef?
     public var batch: ComfyInputRef?
     public var checkpoint: ComfyInputRef?
+    /// Frames, on a video latent (LTX, Hunyuan, Wan, Mochi, Cosmos).
+    public var length: ComfyInputRef?
+    /// Seconds, on an audio latent (ACE-Step) or a music node's maximum length (YuE).
+    public var seconds: ComfyInputRef?
+    /// Song lyrics, on a music node.
+    public var lyrics: ComfyInputRef?
+    /// Frames per second, on every node that has one (conditioning and video encoding must agree).
+    public var fps: [ComfyInputRef] = []
 
     public init(positive: ComfyInputRef? = nil, negative: ComfyInputRef? = nil, seed: ComfyInputRef? = nil, width: ComfyInputRef? = nil,
                 height: ComfyInputRef? = nil, batch: ComfyInputRef? = nil, checkpoint: ComfyInputRef? = nil) {
@@ -104,7 +112,8 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
     }
 
     /// The graph with SocialForge's values written in. Nil values keep the workflow's own.
-    public func applying(prompt: String, negative: String?, seed: Int, width: Int?, height: Int?, batch: Int?, checkpoint: String?) -> [String: JSONValue] {
+    public func applying(prompt: String, negative: String?, seed: Int, width: Int?, height: Int?, batch: Int?, checkpoint: String?,
+                         length: Int? = nil, seconds: Double? = nil, lyrics: String? = nil) -> [String: JSONValue] {
         var g = graph
         func set(_ ref: ComfyInputRef?, _ value: JSONValue?) {
             guard let ref, let value, var node = g[ref.node]?.objectValue else { return }
@@ -120,7 +129,40 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         set(mapping.height, height.map { .number(Double($0)) })
         set(mapping.batch, batch.map { .number(Double($0)) })
         set(mapping.checkpoint, checkpoint.map(JSONValue.string))
+        set(mapping.length, length.map { .number(Double($0)) })
+        set(mapping.seconds, seconds.map { .number($0) })
+        set(mapping.lyrics, lyrics.map(JSONValue.string))
         return g
+    }
+
+    /// What the workflow makes, from its output nodes.
+    public var outputKind: ComfyOutputKind {
+        let classes = Set(graph.values.compactMap { $0.objectValue?["class_type"]?.stringValue })
+        if !classes.isDisjoint(with: Self.videoOutputs) { return .video }
+        if classes.contains(where: { $0.hasPrefix("SaveAudio") || $0 == "PreviewAudio" }) { return .audio }
+        return .image
+    }
+
+    /// The video's frame rate, from the workflow (24 when it sets none).
+    public var frameRate: Double {
+        for ref in mapping.fps {
+            if let v = graph[ref.node]?.objectValue?["inputs"]?.objectValue?[ref.input]?.numberValue, v > 0 { return v }
+        }
+        return 24
+    }
+
+    /// Frames for `seconds` of video. LTX needs 8n + 1 frames, which other video models accept too.
+    public func frames(forSeconds seconds: Double) -> Int {
+        let raw = max(9, Int((seconds * frameRate).rounded()))
+        return (raw - 1 + 7) / 8 * 8 + 1
+    }
+
+    static let videoOutputs: Set<String> = ["SaveVideo", "CreateVideo", "SaveWEBM", "SaveAnimatedWEBP", "SaveAnimatedPNG", "VHS_VideoCombine"]
+
+    /// True for workflows meant to draw words into the picture (named "… Text", like the Moss starter).
+    /// AI Studio then leaves out its "no text" wording.
+    public var drawsText: Bool {
+        name.range(of: #"\btext\b"#, options: [.regularExpression, .caseInsensitive]) != nil
     }
 
     /// What SocialForge cannot run without: ["prompt"] when no prompt text input was found.
@@ -174,7 +216,9 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
     }
 
     /// Follows conditioning links (through combine, ControlNet, and similar nodes) to the first text encoder.
-    static func findTextInput(_ graph: [String: JSONValue], from start: String?) -> ComfyInputRef? {
+    /// `role` ("positive" or "negative") is followed first through nodes that carry both, like LTXVConditioning,
+    /// so the prompt never lands in the negative encoder.
+    static func findTextInput(_ graph: [String: JSONValue], from start: String?, role: String? = nil) -> ComfyInputRef? {
         guard let start else { return nil }
         var queue = [start], seen = Set<String>()
         while !queue.isEmpty, seen.count < 50 {
@@ -184,13 +228,19 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
             if cls.contains("TextEncode") {
                 for key in ["text", "text_g", "prompt"] where ins[key]?.stringValue != nil { return ComfyInputRef(node: id, input: key) }
             }
+            if let role, let next = linkTarget(ins[role]) {
+                queue.append(next)
+                continue
+            }
             for key in ins.keys.sorted() { if let next = linkTarget(ins[key]) { queue.append(next) } }
         }
         return nil
     }
 
     static let samplerClasses: Set<String> = ["KSampler", "KSamplerAdvanced"]
-    static let latentClasses: Set<String> = ["EmptyLatentImage", "EmptySD3LatentImage"]
+    static let latentClasses: Set<String> = ["EmptyLatentImage", "EmptySD3LatentImage", "EmptyFlux2LatentImage", "EmptyHunyuanImageLatent", "EmptyLTXVLatentVideo", "EmptyHunyuanLatentVideo",
+                                             "EmptyMochiLatentVideo", "EmptyCosmosLatentVideo", "EmptyAceStepLatentAudio",
+                                             "EmptyYuE2LatentAudio"]
 
     static func detectMapping(_ graph: [String: JSONValue]) -> ComfyMapping {
         var m = ComfyMapping()
@@ -199,8 +249,8 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
             let ins = inputs(graph, sampler)
             if ins["seed"] != nil { m.seed = ComfyInputRef(node: sampler, input: "seed") }
             else if ins["noise_seed"] != nil { m.seed = ComfyInputRef(node: sampler, input: "noise_seed") }
-            m.positive = findTextInput(graph, from: linkTarget(ins["positive"]))
-            m.negative = findTextInput(graph, from: linkTarget(ins["negative"]))
+            m.positive = findTextInput(graph, from: linkTarget(ins["positive"]), role: "positive")
+            m.negative = findTextInput(graph, from: linkTarget(ins["negative"]), role: "negative")
             if m.negative == m.positive { m.negative = nil }
             if let latent = linkTarget(ins["latent_image"]), latentClasses.contains(classType(graph, latent) ?? "") {
                 fillLatent(&m, graph, latent)
@@ -212,6 +262,24 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         if let ckpt = ids.first(where: { classType(graph, $0) == "CheckpointLoaderSimple" }), inputs(graph, ckpt)["ckpt_name"]?.stringValue != nil {
             m.checkpoint = ComfyInputRef(node: ckpt, input: "ckpt_name")
         }
+        // Music nodes (YuE, ACE-Step) take a style or tags line and lyrics instead of a text encoder.
+        if let music = ids.first(where: { inputs(graph, $0)["lyrics"]?.stringValue != nil }) {
+            let ins = inputs(graph, music)
+            m.lyrics = ComfyInputRef(node: music, input: "lyrics")
+            if m.positive == nil {
+                for key in ["style", "tags", "genre"] where ins[key]?.stringValue != nil { m.positive = ComfyInputRef(node: music, input: key); break }
+            }
+            if m.negative?.node == music { m.negative = nil }
+            if m.seconds == nil {
+                for key in ["max_duration", "seconds", "duration"] where ins[key]?.numberValue != nil { m.seconds = ComfyInputRef(node: music, input: key); break }
+            }
+        }
+        // Frame rate, wherever it is set (LTXVConditioning frame_rate, CreateVideo fps).
+        for id in ids {
+            let ins = inputs(graph, id)
+            for key in ["frame_rate", "fps"] where ins[key]?.numberValue != nil { m.fps.append(ComfyInputRef(node: id, input: key)) }
+        }
+        if m.positive != nil, m.positive == m.negative { m.negative = nil }
         return m
     }
 
@@ -220,7 +288,19 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         if ins["width"]?.numberValue != nil { m.width = ComfyInputRef(node: id, input: "width") }
         if ins["height"]?.numberValue != nil { m.height = ComfyInputRef(node: id, input: "height") }
         if ins["batch_size"]?.numberValue != nil { m.batch = ComfyInputRef(node: id, input: "batch_size") }
+        if ins["length"]?.numberValue != nil { m.length = ComfyInputRef(node: id, input: "length") }
+        if ins["seconds"]?.numberValue != nil { m.seconds = ComfyInputRef(node: id, input: "seconds") }
     }
+}
+
+public enum ComfyOutputKind: String, Sendable { case image, video, audio
+    public var noun: String { switch self { case .image: "image"; case .video: "video"; case .audio: "track" } }
+}
+
+/// A finished output file: its name on the ComfyUI server (with the real extension) and its bytes.
+public struct ComfyOutputFile: Sendable, Equatable {
+    public var filename: String
+    public var data: Data
 }
 
 public struct ComfyOutputImage: Codable, Sendable, Equatable {
@@ -349,7 +429,9 @@ public struct ComfyUIClient: Sendable {
         let outputs = entry["outputs"]?.objectValue ?? [:]
         var images: [ComfyOutputImage] = []
         for node in ComfyWorkflow.sortedIDs(outputs.keys) {
-            for item in outputs[node]?.objectValue?["images"]?.arrayValue ?? [] {
+            // Images under "images"; core SaveVideo and SaveAudio too; VHS uses "gifs".
+            let node = outputs[node]?.objectValue ?? [:]
+            for item in ["images", "gifs", "videos", "audio"].flatMap({ node[$0]?.arrayValue ?? [] }) {
                 guard let o = item.objectValue, let name = o["filename"]?.stringValue else { continue }
                 images.append(ComfyOutputImage(filename: name, subfolder: o["subfolder"]?.stringValue ?? "", type: o["type"]?.stringValue ?? "output"))
             }
@@ -426,14 +508,20 @@ public struct ComfyUIClient: Sendable {
     /// Cancelling the calling task, or running past `timeout`, stops the job on the server.
     /// Pass the same `clientID` to `progress(clientID:)` to watch this job's sampling steps.
     public func run(graph: [String: JSONValue], clientID: String = UUID().uuidString, pollEvery: Duration = .seconds(1), timeout: Duration = .seconds(600)) async throws -> [Data] {
+        try await runFiles(graph: graph, clientID: clientID, pollEvery: pollEvery, timeout: timeout).map(\.data)
+    }
+
+    /// Like `run`, keeping each output's file name, so videos and audio keep their real type.
+    public func runFiles(graph: [String: JSONValue], clientID: String = UUID().uuidString, pollEvery: Duration = .seconds(1),
+                         timeout: Duration = .seconds(600)) async throws -> [ComfyOutputFile] {
         let promptID = try await submit(graph: graph, clientID: clientID)
         let deadline = ContinuousClock.now.advanced(by: timeout)
         do {
             while true {
                 try Task.checkCancellation()
                 if let images = try await outputs(promptID: promptID) {
-                    var out: [Data] = []
-                    for o in images { out.append(try await image(o)) }
+                    var out: [ComfyOutputFile] = []
+                    for o in images { out.append(ComfyOutputFile(filename: o.filename, data: try await image(o))) }
                     return out
                 }
                 if ContinuousClock.now >= deadline {

@@ -1,0 +1,89 @@
+{
+  "platform": "instagram",
+  "name": "Instagram",
+  "specVersion": "2026-11-19",
+  "status": "available",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Instagram Platform: Content Publishing",
+      "url": "https://developers.facebook.com/docs/instagram-platform/content-publishing/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "IG User Media reference",
+      "url": "https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/media",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Instagram resumable uploads",
+      "url": "https://developers.facebook.com/documentation/instagram-platform/content-publishing/resumable-uploads",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "image",
+      "name": "Photo post (needs public media storage)",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "reel",
+      "name": "Reel",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "caption": {
+      "max": 2200,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg"
+    ],
+    "maxBytes": 8388608,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
+    "recommendedMinWidth": 320,
+    "note": "JPEG only, 320 to 1440 px wide, aspect 4:5 to 1.91:1. Business or creator accounts only; 100 API posts per 24 hours."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 314572800,
+    "minSeconds": 3,
+    "maxSeconds": 900,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Reels: 3 s to 15 min, at most 1920 px wide, 25 Mbps video, AAC up to 48 kHz at 128 kbps, moov atom first."
+  }
+}

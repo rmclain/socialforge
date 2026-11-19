@@ -55,7 +55,7 @@ struct CalendarView: View {
             Button("Next", systemImage: "chevron.right") { step(1) }.labelStyle(.iconOnly).buttonStyle(IconButtonStyle())
             Button("Today") { anchor = .now }.buttonStyle(SecondaryButtonStyle())
             Spacer()
-            ForEach(["pinterest", "facebook", "x", "linkedin"], id: \.self) { p in
+            ForEach(["pinterest", "instagram", "facebook", "threads", "x", "linkedin"], id: \.self) { p in
                 let n = mine.filter { $0.platform == p }.count
                 if n > 0 || p == "pinterest" {
                     Button { platformFilter = platformFilter == p ? nil : p } label: {

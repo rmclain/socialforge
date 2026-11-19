@@ -35,6 +35,8 @@ final class MediaAsset {
     var height: Int = 0
     var format: String = ""
     var kind: String = "image"
+    /// Seconds, for video and audio.
+    var duration: Double = 0
     var hasAlpha: Bool = false
     var importedAt: Date = Date.now
     var tags: [String] = []
@@ -209,6 +211,12 @@ final class SocialAccount {
 
     /// Keychain item that holds this account's access token (on-Mac accounts only).
     var tokenKey: String { "token.\(serverID)" }
+
+    /// The platform's own id (Page, Instagram account, Threads user) for accounts this Mac connected.
+    var platformID: String {
+        let prefix = "mac-\(platform)-"
+        return serverID.hasPrefix(prefix) ? String(serverID.dropFirst(prefix.count)) : serverID
+    }
 
     var capabilities: [AccountCapability] {
         Capabilities.forAccount(platform: platform, grantedScopes: Set(scopes), status: status)

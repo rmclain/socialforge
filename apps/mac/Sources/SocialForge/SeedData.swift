@@ -1,3 +1,4 @@
+import AVFoundation
 import AppKit
 import Foundation
 import ImageIO
@@ -124,6 +125,33 @@ enum SeedData {
         model.studio.previewValues = ["title": "Slow mornings, warmer mugs.", "subtitle": "Hand-thrown stoneware, made in small batches in Portland.",
                                       "price": "$38", "cta": "Shop the Fog mug", "brand": "Oak & Ember", "url": "", "product_name": "Stoneware Mug — Fog", "date": ""]
         return StudioModel.productPin().withPhoto(a.storedPath)
+    }
+
+    /// A TikTok-sized video design for snapshots: a clip made from a product photo, the text over it, and a music track.
+    static func sampleVideoDesign(_ model: AppModel) async -> CreativeDocument? {
+        guard var doc = sampleDesign(model) else { return nil }
+        doc = doc.resized(width: 1080, height: 1920, name: "Fog mug · TikTok")
+        let dir = model.storage.exports
+        // A 4-second clip of the photo layer alone, and a tone for the music.
+        var clipDoc = doc
+        clipDoc.layers = clipDoc.layers.filter { if case .image = $0.content { true } else { false } }
+        clipDoc.duration = 4
+        guard let clip = try? await VideoExporter.export(clipDoc, to: dir.appending(path: "sample-clip.mp4"), fps: 12) else { return nil }
+        let tone = dir.appending(path: "sample-music.wav")
+        let format = AVAudioFormat(standardFormatWithSampleRate: 22_050, channels: 1)!
+        let frames = AVAudioFrameCount(8 * 22_050)
+        if let buffer = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames), let file = try? AVAudioFile(forWriting: tone, settings: format.settings) {
+            buffer.frameLength = frames
+            for i in 0..<Int(frames) { buffer.floatChannelData![0][i] = Float(sin(Double(i) * 2 * .pi * 330 / 22_050) * 0.2) }
+            try? file.write(from: buffer)
+        }
+        doc.layers.removeAll { if case .image(let i) = $0.content { i.role == "photo" } else { false } }
+        doc.layers.insert(CreativeLayer(name: "Product clip", x: 0, y: 0, width: 1080, height: 1920,
+                                        content: .video(VideoLayer(path: clip.path, clipDuration: 4, loop: true))), at: 0)
+        if let i = doc.layers.lastIndex(where: { if case .text = $0.content { true } else { false } }) { doc.layers[i].start = 2 }
+        doc.duration = 12
+        doc.audioTracks = [AudioTrack(name: "Warm acoustic", path: tone.path, fileDuration: 8, volume: 0.8, fadeIn: 0.5, fadeOut: 1.5, loop: true)]
+        return doc
     }
 
     /// A soft product-photo stand-in: gradient backdrop, a shadow, and an object.

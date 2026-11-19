@@ -15,6 +15,17 @@ public struct CreativeDocument: Codable, Sendable, Equatable {
     public var height: Int
     public var background: RGBA
     public var layers: [CreativeLayer]
+    /// Seconds. Set for a video design; nil for a still image.
+    public var duration: Double?
+    /// Music and sound under the video, mixed with the sound of video layers.
+    public var audio: [AudioTrack]?
+
+    /// True when the design exports as a video (it has a length).
+    public var isVideo: Bool { (duration ?? 0) > 0 }
+    public var audioTracks: [AudioTrack] {
+        get { audio ?? [] }
+        set { audio = newValue.isEmpty ? nil : newValue }
+    }
 
     public init(name: String, width: Int, height: Int, background: RGBA = .white, layers: [CreativeLayer] = []) {
         self.name = name; self.width = width; self.height = height; self.background = background; self.layers = layers
@@ -87,18 +98,32 @@ public struct CreativeLayer: Codable, Sendable, Equatable, Identifiable {
     public var isHidden: Bool
     /// Layers with the same group name move, lock, and hide together.
     public var group: String?
+    /// In a video: the second the layer appears, and the second it goes away. nil = the whole video.
+    public var start: Double?
+    public var end: Double?
     public var content: Content
+
+    /// Whether the layer shows at `time` seconds (nil time = a still render: always).
+    public func isVisible(at time: Double?) -> Bool {
+        guard let time else { return true }
+        if let start, time < start { return false }
+        if let end, time >= end { return false }
+        return true
+    }
 
     public enum Content: Codable, Sendable, Equatable {
         case image(ImageLayer)
         case text(TextLayer)
         case shape(ShapeLayer)
+        case video(VideoLayer)
     }
 
     public init(id: UUID = UUID(), name: String, x: Double, y: Double, width: Double, height: Double,
-                opacity: Double = 1, isLocked: Bool = false, isHidden: Bool = false, group: String? = nil, content: Content) {
+                opacity: Double = 1, isLocked: Bool = false, isHidden: Bool = false, group: String? = nil,
+                start: Double? = nil, end: Double? = nil, content: Content) {
         self.id = id; self.name = name; self.x = x; self.y = y; self.width = width; self.height = height
-        self.opacity = opacity; self.isLocked = isLocked; self.isHidden = isHidden; self.group = group; self.content = content
+        self.opacity = opacity; self.isLocked = isLocked; self.isHidden = isHidden; self.group = group
+        self.start = start; self.end = end; self.content = content
     }
 
     public var kind: String {
@@ -106,7 +131,62 @@ public struct CreativeLayer: Codable, Sendable, Equatable, Identifiable {
         case .image: "Image"
         case .text: "Text"
         case .shape: "Shape"
+        case .video: "Video"
         }
+    }
+}
+
+/// A video clip on the canvas. Its sound is mixed in unless muted.
+public struct VideoLayer: Codable, Sendable, Equatable {
+    public var path: String
+    public var mode: FitMode
+    public var cornerRadius: Double?
+    public var focusX: Double?
+    public var focusY: Double?
+    /// Seconds skipped at the start of the clip.
+    public var trimStart: Double
+    /// Length of the clip file in seconds (read when it was added).
+    public var clipDuration: Double
+    public var volume: Double
+    public var muted: Bool
+    /// Starts over when it reaches the end, until the layer's end.
+    public var loop: Bool
+    public init(path: String, mode: FitMode = .fill, cornerRadius: Double? = nil, focusX: Double? = nil, focusY: Double? = nil,
+                trimStart: Double = 0, clipDuration: Double, volume: Double = 1, muted: Bool = false, loop: Bool = false) {
+        self.path = path; self.mode = mode; self.cornerRadius = cornerRadius; self.focusX = focusX; self.focusY = focusY
+        self.trimStart = trimStart; self.clipDuration = clipDuration; self.volume = volume; self.muted = muted; self.loop = loop
+    }
+    public var focus: CGPoint { CGPoint(x: focusX ?? 0.5, y: focusY ?? 0.5) }
+
+    /// The second in the clip file shown at `local` seconds after the layer starts, or nil after a non-looping clip ended.
+    public func clipTime(at local: Double) -> Double? {
+        let usable = max(0, clipDuration - trimStart)
+        guard usable > 0, local >= 0 else { return local < 0 ? nil : trimStart }
+        if local < usable { return trimStart + local }
+        if loop { return trimStart + local.truncatingRemainder(dividingBy: usable) }
+        // Hold the last frame.
+        return trimStart + max(0, usable - 0.001)
+    }
+}
+
+/// A music or sound track in a video design.
+public struct AudioTrack: Codable, Sendable, Equatable, Identifiable {
+    public var id: UUID
+    public var name: String
+    public var path: String
+    /// Second of the video where the track starts.
+    public var start: Double
+    /// Seconds skipped at the start of the file.
+    public var trimStart: Double
+    public var fileDuration: Double
+    public var volume: Double
+    public var fadeIn: Double
+    public var fadeOut: Double
+    public var loop: Bool
+    public init(id: UUID = UUID(), name: String, path: String, start: Double = 0, trimStart: Double = 0, fileDuration: Double,
+                volume: Double = 1, fadeIn: Double = 0, fadeOut: Double = 1, loop: Bool = false) {
+        self.id = id; self.name = name; self.path = path; self.start = start; self.trimStart = trimStart
+        self.fileDuration = fileDuration; self.volume = volume; self.fadeIn = fadeIn; self.fadeOut = fadeOut; self.loop = loop
     }
 }
 
@@ -209,18 +289,32 @@ public enum CreativeRenderer {
 
     /// Renders at `scale` × the canvas size. Fails on missing fonts unless
     /// `allowFallbackFonts` (used for on-screen previews only).
-    public static func render(_ doc: CreativeDocument, scale: Double = 1, allowFallbackFonts: Bool = false) throws(RenderError) -> CGImage {
+    /// `time` (seconds) shows only the layers visible then; `frames` holds each video layer's picture
+    /// at that time (a video layer without one draws a dark placeholder).
+    public static func render(_ doc: CreativeDocument, scale: Double = 1, allowFallbackFonts: Bool = false,
+                              time: Double? = nil, frames: [UUID: CGImage] = [:]) throws(RenderError) -> CGImage {
         if !allowFallbackFonts, !doc.missingFonts.isEmpty { throw .missingFonts(doc.missingFonts) }
         let w = Int(Double(doc.width) * scale), h = Int(Double(doc.height) * scale)
         guard let ctx = CGContext(data: nil, width: w, height: h, bitsPerComponent: 8, bytesPerRow: 0,
                                   space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                   bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else { throw .cannotDraw }
+        try draw(doc, in: ctx, pixelHeight: h, scale: scale, time: time, frames: frames, images: nil)
+        guard let image = ctx.makeImage() else { throw .cannotDraw }
+        return image
+    }
+
+    /// Draws into any bitmap context (a video frame's pixel buffer, for example). `images` caches decoded
+    /// image layers across frames.
+    public static func draw(_ doc: CreativeDocument, in ctx: CGContext, pixelHeight h: Int, scale: Double,
+                            time: Double?, frames: [UUID: CGImage], images: ImageCache?) throws(RenderError) {
+        ctx.saveGState()
+        defer { ctx.restoreGState() }
         // Work in canvas points with the origin at the top left.
         ctx.translateBy(x: 0, y: CGFloat(h))
         ctx.scaleBy(x: scale, y: -scale)
         ctx.setFillColor(doc.background.cgColor)
         ctx.fill(CGRect(x: 0, y: 0, width: doc.width, height: doc.height))
-        for layer in doc.layers where !layer.isHidden {
+        for layer in doc.layers where !layer.isHidden && layer.isVisible(at: time) {
             let frame = CGRect(x: layer.x, y: layer.y, width: layer.width, height: layer.height)
             ctx.saveGState()
             ctx.setAlpha(layer.opacity)
@@ -231,21 +325,18 @@ public enum CreativeRenderer {
                     ctx.restoreGState()
                     continue
                 }
-                guard let image = ImageTransformer.load(URL(fileURLWithPath: img.path)) else {
+                guard let image = images?.image(img.path) ?? ImageTransformer.load(URL(fileURLWithPath: img.path)) else {
                     ctx.restoreGState()
                     throw .missingImage(img.path)
                 }
-                let (draw, _) = ImageTransformer.layout(source: CGSize(width: image.width, height: image.height), canvas: frame.size, mode: img.mode, focus: img.focus)
-                if let r = img.cornerRadius, r > 0 {
-                    ctx.addPath(CGPath(roundedRect: frame, cornerWidth: min(r, frame.width / 2), cornerHeight: min(r, frame.height / 2), transform: nil))
-                    ctx.clip()
+                drawPicture(image, in: frame, mode: img.mode, focus: img.focus, cornerRadius: img.cornerRadius, ctx: ctx)
+            case .video(let v):
+                if let image = frames[layer.id] {
+                    drawPicture(image, in: frame, mode: v.mode, focus: v.focus, cornerRadius: v.cornerRadius, ctx: ctx)
                 } else {
-                    ctx.clip(to: frame)
+                    ctx.setFillColor(CGColor(gray: 0.12, alpha: 1))
+                    ctx.fill(frame)
                 }
-                // Flip back so the image is upright.
-                ctx.translateBy(x: frame.minX + draw.minX, y: frame.minY + draw.minY + draw.height)
-                ctx.scaleBy(x: 1, y: -1)
-                ctx.draw(image, in: CGRect(origin: .zero, size: draw.size))
             case .shape(let shape):
                 let path: CGPath = shape.kind == .ellipse
                     ? CGPath(ellipseIn: frame, transform: nil)
@@ -276,8 +367,20 @@ public enum CreativeRenderer {
             }
             ctx.restoreGState()
         }
-        guard let image = ctx.makeImage() else { throw .cannotDraw }
-        return image
+    }
+
+    static func drawPicture(_ image: CGImage, in frame: CGRect, mode: FitMode, focus: CGPoint, cornerRadius: Double?, ctx: CGContext) {
+        let (draw, _) = ImageTransformer.layout(source: CGSize(width: image.width, height: image.height), canvas: frame.size, mode: mode, focus: focus)
+        if let r = cornerRadius, r > 0 {
+            ctx.addPath(CGPath(roundedRect: frame, cornerWidth: min(r, frame.width / 2), cornerHeight: min(r, frame.height / 2), transform: nil))
+            ctx.clip()
+        } else {
+            ctx.clip(to: frame)
+        }
+        // Flip back so the image is upright.
+        ctx.translateBy(x: frame.minX + draw.minX, y: frame.minY + draw.minY + draw.height)
+        ctx.scaleBy(x: 1, y: -1)
+        ctx.draw(image, in: CGRect(origin: .zero, size: draw.size))
     }
 
     public static func attributed(_ t: TextLayer) -> NSAttributedString {
@@ -322,5 +425,17 @@ public enum CreativeRenderer {
         let image = try render(doc)
         try ImageTransformer.write(image, to: url, format: format, quality: quality)
         return url
+    }
+}
+
+/// Decoded image layers, kept across the frames of a video export.
+public final class ImageCache {
+    private var images: [String: CGImage] = [:]
+    public init() {}
+    public func image(_ path: String) -> CGImage? {
+        if let hit = images[path] { return hit }
+        let loaded = ImageTransformer.load(URL(fileURLWithPath: path))
+        images[path] = loaded
+        return loaded
     }
 }

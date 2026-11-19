@@ -163,6 +163,7 @@ struct PublishingSettings: View {
                 Text(model.helperStatusText).font(DS.small).foregroundStyle(DS.text2)
             }
         }
+        PlatformsSettingsGroup()
         if model.publishMode == .mac {
             SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add http://127.0.0.1:8085/pinterest/callback as a redirect URI. The ID, secret, and tokens stay in your Keychain. Live publishing is built but not yet verified against Pinterest.") {
                 TextField("App ID", text: $clientID).fieldStyle().onSubmit { Keychain.write("pinterest.clientID", clientID) }
@@ -187,6 +188,7 @@ struct PublishingSettings: View {
                 clientID = Keychain.read("pinterest.clientID") ?? ""
                 clientSecret = Keychain.read("pinterest.clientSecret") ?? ""
             }
+            MetaPublishingSettings()
         } else {
             SettingsGroup(title: "Publishing service", footer: "Run it with `npm run dev:local` in services/api (plain Node and PostgreSQL). The token is stored in your Keychain.") {
                 TextField("http://127.0.0.1:8787", text: $model.backendURLString).fieldStyle().onSubmit { Task { await model.checkBackend() } }
@@ -329,5 +331,51 @@ struct AppearanceSettingsPane: View {
         SettingsGroup(title: "Appearance", footer: "SocialForge follows your Mac's light or dark mode. The accent is SocialForge's ember orange from the design.") {
             AppearanceSettings()
         }
+    }
+}
+
+/// Every platform SocialForge knows, with what it does for each today and its video rules.
+struct PlatformsSettingsGroup: View {
+    var body: some View {
+        SettingsGroup(title: "Platforms", footer: "Built means SocialForge posts from this Mac with your own developer app; it is not yet verified with a live post. Export only means SocialForge makes the post or video at the platform's size and length; you upload it in that app. Sizes and limits come from each platform's developer docs (spec/platforms).") {
+            ForEach(Array(PlatformRegistry.all.sorted { Self.order($0) < Self.order($1) }.enumerated()), id: \.element.id) { index, spec in
+                if index > 0 { Divider().overlay(DS.stroke) }
+                HStack(alignment: .top, spacing: Space.md) {
+                    PlatformBadge(platform: spec.platform, size: 24)
+                    VStack(alignment: .leading, spacing: Space.xs) {
+                        HStack(spacing: Space.sm) {
+                            Text(spec.name).font(DS.bodyMedium).foregroundStyle(DS.text)
+                            Spacer(minLength: Space.sm)
+                            StatusDot(text: Self.badge(spec), color: Self.color(spec))
+                        }
+                        Text(PlatformStatus.summary(spec)).font(DS.small).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
+                        if let v = spec.video {
+                            Text(Self.videoLine(v)).font(DS.small).foregroundStyle(DS.text3)
+                        }
+                    }
+                }
+                .accessibilityElement(children: .combine)
+            }
+        }
+    }
+
+    static func order(_ s: PlatformSpec) -> Int {
+        ["pinterest", "tiktok", "instagram", "youtube", "facebook", "threads", "x", "linkedin"].firstIndex(of: s.platform) ?? 99
+    }
+
+    static func badge(_ s: PlatformSpec) -> String {
+        if s.isAvailable { return s.liveVerified ? "Live" : "Built" }
+        return ["facebook", "linkedin", "x"].contains(s.platform) ? "Drafts" : "Export only"
+    }
+
+    static func color(_ s: PlatformSpec) -> Color {
+        s.isAvailable ? (s.liveVerified ? DS.green : DS.amber) : DS.text3
+    }
+
+    static func videoLine(_ v: PlatformSpec.VideoRule) -> String {
+        var parts = ["Video \(v.recommended.width) × \(v.recommended.height) (\(v.recommended.aspect))"]
+        if let max = v.maxSeconds { parts.append("up to \(PostValidator.duration(max))") }
+        parts.append(v.formats.map { $0.uppercased() }.joined(separator: "/"))
+        return parts.joined(separator: " · ")
     }
 }

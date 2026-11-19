@@ -18,7 +18,13 @@ struct PlatformTests {
     }
 
     @Test func registryDecodesEveryPlatform() {
-        #expect(Set(PlatformRegistry.all.map(\.platform)) == ["pinterest", "x", "linkedin", "facebook"])
+        #expect(Set(PlatformRegistry.all.map(\.platform)) == ["pinterest", "x", "linkedin", "facebook", "tiktok", "instagram", "youtube", "threads"])
+        #expect(Set(PlatformRegistry.all.filter(\.isAvailable).map(\.platform)) == ["pinterest", "facebook", "instagram", "threads"])
+        // Built, never claimed as verified live.
+        #expect(PlatformRegistry.all.allSatisfy { !$0.liveVerified })
+        #expect(PlatformStatus.summary(PlatformRegistry.spec("instagram")!).contains("not yet verified live"))
+        #expect(PlatformRegistry.all.allSatisfy { $0.video != nil })
+        #expect(PlatformRegistry.spec("youtube")?.image == nil)
         #expect(PlatformRegistry.spec("pinterest")?.isAvailable == true)
         #expect(PlatformRegistry.spec("x")?.isAvailable == false)
         #expect(PlatformRegistry.all.allSatisfy { !$0.liveVerified })
@@ -77,6 +83,37 @@ struct PlatformTests {
         #expect(expired.first?.allowed == false)
         let planned = Capabilities.forAccount(platform: "linkedin", grantedScopes: ["w_member_social"], status: "connected")
         #expect(planned.allSatisfy { !$0.allowed })
+        let tiktok = Capabilities.forAccount(platform: "tiktok", grantedScopes: ["video.publish"], status: "connected")
+        #expect(tiktok.allSatisfy { !$0.allowed && $0.reason?.contains("Export the video from Studio") == true })
+    }
+
+    @Test func videoRules() {
+        // A 30 s vertical MP4 fits TikTok.
+        let ok = PostValidator.validateVideo(platform: "tiktok", seconds: 30, width: 1080, height: 1920, bytes: 40_000_000, format: "mp4", fps: 30)
+        #expect(ok.isEmpty)
+        // Too long for Facebook Reels (90 s), and landscape is only information.
+        let fb = PostValidator.validateVideo(platform: "facebook", seconds: 120, width: 1920, height: 1080, bytes: 10_000_000, format: "mp4")
+        #expect(fb.filter { $0.level == .error }.count == 1)
+        #expect(fb.contains { $0.level == .info && $0.message.contains("9:16") })
+        // Instagram: 300 MB cap, MOV or MP4 only, at least 23 fps.
+        let ig = PostValidator.validateVideo(platform: "instagram", seconds: 10, width: 1080, height: 1920, bytes: 400_000_000, format: "webm", fps: 15)
+        #expect(ig.filter { $0.level == .error }.count == 3)
+        // Too short for Pinterest (4 s).
+        #expect(PostValidator.validateVideo(platform: "pinterest", seconds: 2, width: 1080, height: 1920, bytes: 1_000_000, format: "mp4").contains { $0.level == .error })
+        #expect(PostValidator.validateVideo(platform: "nope", seconds: 2, width: 1, height: 1, bytes: 1, format: "mp4").first?.field == "platform")
+    }
+
+    @Test func youtubeTakesNoImagePosts() {
+        let issues = PostValidator.validate(PostDraft(platform: "youtube", image: ImageFacts(width: 1080, height: 1920, bytes: 1000, format: "jpeg")))
+        #expect(issues.contains { $0.field == "image" && $0.message.contains("does not take image posts") })
+    }
+
+    @Test func durations() {
+        #expect(PostValidator.duration(90) == "1 min 30 s")
+        #expect(PostValidator.duration(600) == "10 min")
+        #expect(PostValidator.duration(45) == "45 s")
+        #expect(PlatformStatus.summary(PlatformRegistry.spec("tiktok")!).hasPrefix("Export only"))
+        #expect(PlatformStatus.summary(PlatformRegistry.spec("x")!).hasPrefix("Drafts only"))
     }
 }
 

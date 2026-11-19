@@ -51,6 +51,7 @@ extension AppModel {
 
     /// Boards for accounts this Mac holds tokens for.
     func refreshLocalAccounts() async {
+        await refreshThreadsTokens()
         for a in accounts where a.source == "mac" && a.status == "connected" {
             guard let target = PublishRunner.target(for: a, storage: storage) else { continue }
             do {
@@ -142,13 +143,15 @@ extension AppModel {
 /// Receives the OAuth redirect on 127.0.0.1 only, once, then stops listening.
 nonisolated final class OAuthLoopback: @unchecked Sendable {
     static let port: UInt16 = 8085
+    /// The name shown on the page the browser lands on.
+    var service = "Pinterest"
 
     nonisolated enum LoopbackError: LocalizedError {
         case timeout, denied(String), badState, portBusy
         var errorDescription: String? {
             switch self {
             case .timeout: "No answer from the browser within 5 minutes."
-            case .denied(let why): "Pinterest did not grant access: \(why)"
+            case .denied(let why): "Access was not granted: \(why)"
             case .badState: "The answer did not match this request."
             case .portBusy: "Port \(OAuthLoopback.port) is in use. Quit what is using it and try again."
             }
@@ -159,6 +162,7 @@ nonisolated final class OAuthLoopback: @unchecked Sendable {
         let params = NWParameters.tcp
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: Self.port)!)
         guard let listener = try? NWListener(using: params) else { throw LoopbackError.portBusy }
+        let service = self.service
         return try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
             let box = OnceBox(cont)
             listener.newConnectionHandler = { conn in
@@ -170,16 +174,16 @@ nonisolated final class OAuthLoopback: @unchecked Sendable {
                     let value = { (n: String) in items.first { $0.name == n }?.value }
                     let body: String
                     if let err = value("error") {
-                        body = "Pinterest did not grant access. You can close this tab."
+                        body = "\(service) did not grant access. You can close this tab."
                         box.resume(.failure(LoopbackError.denied(err)))
                     } else if value("state") != state {
                         body = "This answer does not match. Start again from SocialForge."
                         box.resume(.failure(LoopbackError.badState))
                     } else if let code = value("code") {
-                        body = "Pinterest is connected. You can close this tab and return to SocialForge."
+                        body = "\(service) is connected. You can close this tab and return to SocialForge."
                         box.resume(.success(code))
                     } else {
-                        body = "Waiting for Pinterest…"
+                        body = "Waiting for \(service)…"
                     }
                     let html = "<!doctype html><meta charset=utf-8><body style='font:16px -apple-system;margin:20vh auto;max-width:28em'><p>\(body)</p>"
                     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html; charset=utf-8\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"

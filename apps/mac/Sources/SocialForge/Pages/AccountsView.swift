@@ -27,10 +27,19 @@ struct AccountsView: View {
                     .buttonStyle(SecondaryButtonStyle()).disabled(refreshing)
                     Menu {
                         ForEach(PlatformRegistry.all) { spec in
-                            Button(spec.name + (spec.isAvailable ? "" : " (milestone 4)")) {
-                                Task { if model.publishMode == .mac { await model.connectPinterestOnMac() } else { await model.connect(platform: spec.platform) } }
+                            // The optional service connects Pinterest only; Meta platforms post from this Mac.
+                            let macOnly = spec.platform != "pinterest" && model.publishMode == .service
+                            Button(spec.name + (!spec.isAvailable ? " (not built yet)" : macOnly ? " (This Mac publishing only)" : "")) {
+                                Task {
+                                    switch (model.publishMode, spec.platform) {
+                                    case (.service, _): await model.connect(platform: spec.platform)
+                                    case (.mac, "facebook"), (.mac, "instagram"): await model.connectMeta(.facebook)
+                                    case (.mac, "threads"): await model.connectMeta(.threads)
+                                    default: await model.connectPinterestOnMac()
+                                    }
+                                }
                             }
-                            .disabled(!spec.isAvailable)
+                            .disabled(!spec.isAvailable || macOnly)
                         }
                         Divider()
                         Button("Mock Pinterest (testing only)") { model.addMockAccount() }
@@ -39,9 +48,9 @@ struct AccountsView: View {
                 }
                 if accounts.isEmpty {
                     EmptyState(symbol: "person.2", title: "No accounts yet",
-                               message: "Connect Pinterest with your own Pinterest app (ID and secret in Settings > Publishing), or add the mock account to try the whole flow without credentials.") {
+                               message: "Connect Pinterest, Facebook, Instagram, or Threads with your own developer apps (IDs and secrets in Settings > Publishing), or add the mock account to try the whole flow without credentials.") {
                         Button("Add Mock Account") { model.addMockAccount() }.buttonStyle(SecondaryButtonStyle())
-                        Button("Pinterest Settings") { model.settingsTab = .publishing; model.page = .settings }.buttonStyle(SecondaryButtonStyle())
+                        Button("Publishing Settings") { model.settingsTab = .publishing; model.page = .settings }.buttonStyle(SecondaryButtonStyle())
                     }
                     .frame(height: 300)
                 }
@@ -125,16 +134,17 @@ struct CapabilityMatrix: View {
     var body: some View {
         Grid(alignment: .leading, horizontalSpacing: Space.xl, verticalSpacing: Space.md) {
             GridRow {
-                ForEach(["Platform", "Status", "Content", "Image", "Text limits"], id: \.self) { Text($0.uppercased()).font(DS.sectionLabel).tracking(0.6).foregroundStyle(DS.text3) }
+                ForEach(["Platform", "Status", "Content", "Image", "Video", "Text limits"], id: \.self) { Text($0.uppercased()).font(DS.sectionLabel).tracking(0.6).foregroundStyle(DS.text3) }
             }
             Divider().overlay(DS.stroke).gridCellUnsizedAxes(.horizontal)
-            ForEach(PlatformRegistry.all) { s in
+            ForEach(PlatformRegistry.all.sorted { PlatformsSettingsGroup.order($0) < PlatformsSettingsGroup.order($1) }) { s in
                 GridRow {
                     HStack { PlatformBadge(platform: s.platform, size: 18); Text(s.name).font(DS.bodyMedium) }
-                    StatusDot(text: s.isAvailable ? (s.liveVerified ? "Live, verified" : "Built · live API unverified") : "Planned",
+                    StatusDot(text: s.isAvailable ? (s.liveVerified ? "Live, verified" : "Built · live API unverified") : PlatformsSettingsGroup.badge(s),
                               color: s.isAvailable ? (s.liveVerified ? DS.green : DS.amber) : DS.text3)
                     Text(s.contentTypes.map(\.name).joined(separator: ", ")).font(DS.body)
-                    Text("\(s.image.recommended.aspect) · \(s.image.recommended.width)×\(s.image.recommended.height) · ≤\(s.image.maxBytes / 1_048_576) MB").font(DS.body)
+                    Text(s.image.map { "\($0.recommended.aspect) · \($0.recommended.width)×\($0.recommended.height) · ≤\($0.maxBytes / 1_048_576) MB" } ?? "—").font(DS.body)
+                    Text(s.video.map { "\($0.recommended.aspect) · \($0.recommended.width)×\($0.recommended.height)" + ($0.maxSeconds.map { " · ≤" + PostValidator.duration($0) } ?? "") } ?? "—").font(DS.body)
                     Text(s.text.sorted { $0.key < $1.key }.map { "\($0.key) \($0.value.max)" }.joined(separator: ", ")).font(DS.small).foregroundStyle(DS.text2)
                 }
             }

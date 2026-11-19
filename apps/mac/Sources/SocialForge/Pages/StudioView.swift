@@ -9,6 +9,7 @@ struct StudioView: View {
     @State private var dragStart: [UUID: CGPoint] = [:]
     @State private var showSaveTemplate = false
     @State private var templateName = ""
+    @State private var dropTargeted = false
 
     private var studio: StudioModel { model.studio }
 
@@ -18,11 +19,13 @@ struct StudioView: View {
                 ZStack(alignment: .topLeading) {
                     VStack(spacing: 0) {
                         canvasArea(doc)
+                        if doc.isVideo { StudioTimeline().padding(.bottom, Space.md) }
                         SmartResizeStrip()
                     }
                     LayersPanel().padding(Space.lg)
                 }
-                .task(id: studio.revision &+ model.aiRevision &+ (model.brandKit?.colors.hashValue ?? 0)) { await render() }
+                .task(id: studio.revision &+ model.aiRevision &+ (model.brandKit?.colors.hashValue ?? 0) &+ Int(studio.time * 1000)) { await render() }
+                .onDisappear { studio.stop() }
             } else {
                 StudioGallery()
             }
@@ -56,22 +59,33 @@ struct StudioView: View {
                     } else {
                         Rectangle().fill(DS.fillStrong)
                     }
-                    ForEach(doc.layers.filter { !$0.isHidden }) { layer in
+                    ForEach(doc.layers.filter { !$0.isHidden && $0.isVisible(at: doc.isVideo ? studio.time : nil) }) { layer in
                         hitArea(layer)
                     }
                     if let sel = studio.selected, !sel.isHidden { selection(sel) }
                 }
                 .frame(width: Double(doc.width) * studio.zoom, height: Double(doc.height) * studio.zoom)
                 .clipped()
+                .overlay { if dropTargeted { Rectangle().strokeBorder(DS.accentFill, lineWidth: 4).allowsHitTesting(false) } }
+                .dropDestination(for: URL.self) { urls, location in
+                    let onTop = NSEvent.modifierFlags.contains(.option)
+                    let point = CGPoint(x: location.x / studio.zoom, y: location.y / studio.zoom)
+                    Task { await studio.drop(urls, at: point, onTop: onTop, model: model) }
+                    return true
+                } isTargeted: { dropTargeted = $0 }
+                .help("Drop a photo to make it the base image (hold Option to put it on top), or a clip or music")
                 .shadow(color: .black.opacity(0.35), radius: 24, y: 10)
                 .padding(Space.section)
                 .frame(maxWidth: .infinity)
             }
             if let msg = studio.exportMessage ?? studio.busy {
                 HStack {
-                    if studio.busy != nil { ProgressView().controlSize(.small) }
+                    if let p = studio.videoProgress {
+                        ProgressView(value: p).frame(width: 120)
+                    } else if studio.busy != nil { ProgressView().controlSize(.small) }
                     Text(msg).font(DS.small).foregroundStyle(DS.textBody)
                     Spacer()
+                    if studio.videoProgress != nil { Button("Cancel") { studio.cancelVideoExport() }.buttonStyle(SecondaryButtonStyle()) }
                     if studio.busy == nil { Button("Dismiss") { studio.exportMessage = nil }.buttonStyle(.plain).foregroundStyle(DS.text2) }
                 }
                 .card(padding: Space.md)
@@ -143,8 +157,19 @@ struct StudioView: View {
 
     private func render() async {
         guard let doc = studio.rendered(brand: model.brandKit?.style) else { return }
+        // A video design shows the frame at the playhead.
+        let time: Double? = doc.isVideo ? studio.time : nil
+        var frames: [UUID: CGImage] = [:]
+        if let time {
+            for layer in doc.layers where !layer.isHidden && layer.isVisible(at: time) {
+                guard case .video(let v) = layer.content, let clipTime = v.clipTime(at: time - (layer.start ?? 0)) else { continue }
+                let px = Int(max(layer.width, layer.height) * 0.6)
+                if let f = await AVProbe.frame(URL(fileURLWithPath: v.path), at: clipTime, maxPixel: max(240, px)) { frames[layer.id] = f }
+            }
+        }
+        let shown = frames
         let img = await Task.detached(priority: .userInitiated) { () -> CGImage? in
-            try? CreativeRenderer.render(doc, scale: 0.6, allowFallbackFonts: true)
+            try? CreativeRenderer.render(doc, scale: 0.6, allowFallbackFonts: true, time: time, frames: shown)
         }.value
         if let img { preview = NSImage(cgImage: img, size: NSSize(width: doc.width, height: doc.height)) }
     }
@@ -178,7 +203,7 @@ struct ToolBar: View {
                         if let a = model.assets(model.mediaSelection).first { studio.addImage(path: a.storedPath) }
                     }
                     .disabled(model.mediaSelection.isEmpty)
-                    Button("Image from File…") {
+                    Button("Base Image from File…") {
                         let p = NSOpenPanel()
                         p.allowedContentTypes = MediaFormats.images
                         if p.runModal() == .OK, let u = p.url {
@@ -187,15 +212,38 @@ struct ToolBar: View {
                     }
                     Button("Photo Slot (filled per image)") { studio.addImage(path: "", role: "photo") }
                     Button("Brand Logo") { studio.addLogo(model: model) }
+                    Divider()
+                    Button("Video or Music from Library Selection") {
+                        for a in model.assets(model.mediaSelection) where a.kind != "image" { studio.add(a) }
+                    }
+                    .disabled(!model.assets(model.mediaSelection).contains { $0.kind != "image" })
+                    Button("Video or Music from File…") {
+                        let p = NSOpenPanel()
+                        p.allowedContentTypes = MediaFormats.videos + MediaFormats.audio
+                        p.message = "Choose a clip or a music file. It is copied into the Media Library."
+                        if p.runModal() == .OK, let u = p.url {
+                            Task { if let a = await model.importMedia([u]).first { studio.add(a) } }
+                        }
+                    }
                 } label: { Image(systemName: "photo") }
                 .menuStyle(.button).buttonStyle(IconButtonStyle(selected: studio.tool == .image)).menuIndicator(.hidden).fixedSize()
-                .help("Add an image, a photo slot, or the logo")
+                .help("Add an image, a photo slot, the logo, a video clip, or music")
                 tool(.ai, "wand.and.stars", "Generate an AI background in AI Studio") {
                     model.aiStudio.sendToStudio = true
                     model.page = .ai
                 }
                 Menu {
-                    ForEach(CanvasPreset.all) { p in Button("\(p.name) · \(p.width) × \(p.height)") { studio.resize(to: p) } }
+                    Section("Images") {
+                        ForEach(CanvasPreset.all) { p in Button("\(p.name) · \(p.width) × \(p.height)") { studio.resize(to: p) } }
+                    }
+                    Section("Video") {
+                        ForEach(CanvasPreset.video) { p in
+                            Button("\(p.name) · \(p.width) × \(p.height)") {
+                                studio.resize(to: p)
+                                if studio.document?.isVideo != true { studio.makeVideo() }
+                            }
+                        }
+                    }
                 } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                 .menuStyle(.button).buttonStyle(IconButtonStyle(selected: studio.tool == .resize)).menuIndicator(.hidden).fixedSize()
                 .help("Resize the canvas for another platform (text stays live)")
@@ -220,9 +268,16 @@ struct ToolBar: View {
                 }
                 .menuStyle(.button).buttonStyle(SecondaryButtonStyle()).fixedSize()
                 .background { Button("") { studio.save(model: model) }.keyboardShortcut("s").opacity(0) }
-                Button("Export") { Task { _ = await studio.export(model: model) } }.buttonStyle(PrimaryButtonStyle())
-                    .keyboardShortcut("e")
-                    .help("Render with real fonts and add the PNG to the Media Library")
+                if studio.document?.isVideo == true {
+                    Button("Export Video") { studio.exportVideo(model: model) }.buttonStyle(PrimaryButtonStyle())
+                        .keyboardShortcut("e")
+                        .disabled(studio.videoProgress != nil)
+                        .help("Render an MP4 (H.264 and AAC, 30 fps) with real fonts and add it to the Media Library")
+                } else {
+                    Button("Export") { Task { _ = await studio.export(model: model) } }.buttonStyle(PrimaryButtonStyle())
+                        .keyboardShortcut("e")
+                        .help("Render with real fonts and add the PNG to the Media Library")
+                }
             }
         }
     }
@@ -250,6 +305,11 @@ struct LayersPanel: View {
                     Button("Shape") { studio.addShape() }
                     Button("Photo Slot") { studio.addImage(path: "", role: "photo") }
                     Button("Brand Logo") { studio.addLogo(model: model) }
+                    Divider()
+                    Button("Video or Music from Library Selection") {
+                        for a in model.assets(model.mediaSelection) where a.kind != "image" { studio.add(a) }
+                    }
+                    .disabled(!model.assets(model.mediaSelection).contains { $0.kind != "image" })
                 } label: { Image(systemName: "plus") }
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().foregroundStyle(DS.text2)
             }
@@ -267,7 +327,7 @@ struct LayersPanel: View {
                 .padding(.horizontal, Space.sm).frame(height: 32)
                 .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
                 .contentShape(Rectangle())
-                .onTapGesture { studio.selectedLayer = layer.id }
+                .onTapGesture { studio.selectedLayer = layer.id; studio.selectedAudio = nil }
                 .contextMenu {
                     Button(layer.isHidden ? "Show" : "Hide") { studio.changeLayer(layer.id) { $0.isHidden.toggle() } }
                     Button(layer.isLocked ? "Unlock" : "Lock") { studio.changeLayer(layer.id) { $0.isLocked.toggle() } }
@@ -277,6 +337,23 @@ struct LayersPanel: View {
                     Button("Send Backward") { studio.move(layer.id, by: -1) }
                     Divider()
                     Button("Delete", role: .destructive) { studio.delete(layer.id) }.disabled(layer.isLocked)
+                }
+            }
+            if let tracks = studio.document?.audioTracks, !tracks.isEmpty {
+                Text("Audio").font(DS.caption).foregroundStyle(DS.text3).padding(.horizontal, Space.sm).padding(.top, Space.sm)
+                ForEach(tracks) { track in
+                    let selected = studio.selectedAudio == track.id
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: "waveform").font(.system(size: 12)).foregroundStyle(selected ? DS.accent : DS.text2).frame(width: 16)
+                        Text(track.name).font(DS.body).foregroundStyle(DS.text).lineLimit(1)
+                        Spacer()
+                        Text("Audio").font(DS.caption).foregroundStyle(DS.text3)
+                    }
+                    .padding(.horizontal, Space.sm).frame(height: 32)
+                    .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                    .contentShape(Rectangle())
+                    .onTapGesture { studio.selectedAudio = track.id; studio.selectedLayer = nil }
+                    .contextMenu { Button("Remove", role: .destructive) { studio.removeTrack(track.id) } }
                 }
             }
         }
@@ -293,6 +370,7 @@ struct LayersPanel: View {
         case .text: "textformat"
         case .shape: "square"
         case .image(let i): i.role == "logo" ? "seal" : i.role == "photo" ? "photo.on.rectangle" : "photo"
+        case .video: "film"
         }
     }
 
@@ -301,6 +379,7 @@ struct LayersPanel: View {
         case .text: "Text"
         case .shape: "Shape"
         case .image(let i): i.role == "logo" ? "Logo" : i.role == "photo" ? "Photo slot" : "Image"
+        case .video: "Video"
         }
     }
 }
@@ -524,13 +603,14 @@ struct StudioInspector: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            PanelHeader(title: "Inspector") { Text(studio.selected.map { "\($0.name) selected" } ?? (studio.document == nil ? "" : "Canvas")) }
+            PanelHeader(title: "Inspector") { Text(studio.selectedTrack.map { "\($0.name) selected" } ?? studio.selected.map { "\($0.name) selected" } ?? (studio.document == nil ? "" : "Canvas")) }
             Divider().overlay(DS.stroke)
             InspectorScroll {
                 if studio.document == nil {
                     Text("Start a design from a brand template, or open a saved design.").font(DS.body).foregroundStyle(DS.text2)
                 } else {
-                    if let layer = studio.selected { layerSection(layer) } else { canvasSection }
+                    if let track = studio.selectedTrack { audioSection(track) }
+                    else if let layer = studio.selected { layerSection(layer) } else { canvasSection }
                     brandSection
                     aiBackground
                     if let layer = studio.selected, case .image = layer.content { transformSection }
@@ -612,10 +692,12 @@ struct StudioInspector: View {
                 numberField("W", layer.id, \.width)
                 numberField("H", layer.id, \.height)
             }
+            if case .video(let v) = layer.content { videoSection(layer.id, v) }
             HStack {
                 Text("Opacity").font(DS.body).foregroundStyle(DS.text2)
                 Slider(value: bind(layer.id, \.opacity), in: 0...1)
             }
+            if let duration = studio.document?.duration { timingRow(layer, duration: duration) }
             HStack {
                 Toggle("Locked", isOn: bind(layer.id, \.isLocked)).toggleStyle(SFToggleStyle())
                 Toggle("Hidden", isOn: bind(layer.id, \.isHidden)).toggleStyle(SFToggleStyle())
@@ -633,7 +715,133 @@ struct StudioInspector: View {
                 studio.change { $0.background = RGBA(ns.redComponent, ns.greenComponent, ns.blueComponent, ns.alphaComponent) }
             }))
             .font(DS.body)
+            if let duration = studio.document?.duration {
+                SectionLabel("Video")
+                HStack {
+                    Text("Length").font(DS.body).foregroundStyle(DS.text2)
+                    Spacer()
+                    TextField("Seconds", value: Binding(get: { duration }, set: { studio.setDuration($0) }), format: .number.precision(.fractionLength(0...1)))
+                        .fieldStyle().frame(width: 72).multilineTextAlignment(.trailing)
+                    Text("s").font(DS.body).foregroundStyle(DS.text2)
+                }
+                Text("Exports an MP4 (H.264 video, AAC sound, 30 fps). Resize › Video picks TikTok, Reels, Shorts, and other sizes.")
+                    .font(DS.small).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
+                platformFit(duration)
+                Button("Make It a Still Image") { studio.makeStill() }.buttonStyle(SecondaryButtonStyle())
+            } else {
+                SectionLabel("Video")
+                Text("Give the design a length to add clips and music and export a video.").font(DS.small).foregroundStyle(DS.text2)
+                    .fixedSize(horizontal: false, vertical: true)
+                Button("Make It a Video") { studio.makeVideo() }.buttonStyle(SecondaryButtonStyle())
+            }
             Text("Click a layer on the canvas or in Layers to edit it.").font(DS.small).foregroundStyle(DS.text2)
+        }
+    }
+
+    // MARK: Video and audio
+
+    /// Each platform's verdict on this length and size (format is always MP4, H.264 and AAC).
+    private func platformFit(_ duration: Double) -> some View {
+        let doc = studio.document
+        let w = doc?.width ?? 0, h = doc?.height ?? 0
+        let specs = PlatformRegistry.all.filter { $0.video != nil }
+        return VStack(alignment: .leading, spacing: Space.xs) {
+            SectionLabel("Fits")
+            ForEach(specs) { spec in
+                let issues = PostValidator.validateVideo(platform: spec.platform, seconds: duration, width: w, height: h,
+                                                         bytes: 0, format: "mp4", fps: 30)
+                let errors = issues.filter { $0.level == .error }
+                let warnings = issues.filter { $0.level == .warning }
+                HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                    Image(systemName: errors.isEmpty ? (warnings.isEmpty ? "checkmark.circle.fill" : "exclamationmark.circle.fill") : "xmark.circle.fill")
+                        .foregroundStyle(errors.isEmpty ? (warnings.isEmpty ? DS.green : DS.amber) : DS.red)
+                    Text(spec.name).font(DS.body).foregroundStyle(DS.text)
+                    Spacer(minLength: Space.sm)
+                    if let first = (errors + warnings).first {
+                        Text(first.message).font(DS.small).foregroundStyle(DS.text2).lineLimit(2).multilineTextAlignment(.trailing)
+                    }
+                }
+                .help((errors + warnings).map(\.message).joined(separator: "\n"))
+            }
+        }
+    }
+
+    private func videoBind<T>(_ id: UUID, _ kp: WritableKeyPath<VideoLayer, T>) -> Binding<T> {
+        Binding(get: {
+            // A layer deleted while the inspector still draws it reads as an empty clip.
+            guard case .video(let v)? = studio.document?.layers.first(where: { $0.id == id })?.content else { return VideoLayer(path: "", clipDuration: 0)[keyPath: kp] }
+            return v[keyPath: kp]
+        }, set: { value in
+            studio.changeLayer(id) { l in if case .video(var v) = l.content { v[keyPath: kp] = value; l.content = .video(v) } }
+        })
+    }
+
+    @ViewBuilder
+    private func videoSection(_ id: UUID, _ v: VideoLayer) -> some View {
+        PillPicker(options: FitMode.allCases, selection: videoBind(id, \.mode)) { $0 == .fill ? "Fill" : "Fit" }
+        HStack {
+            Text("Skip the first").font(DS.body).foregroundStyle(DS.text2)
+            Spacer()
+            TextField("s", value: Binding(get: { v.trimStart }, set: { x in
+                studio.changeLayer(id) { l in if case .video(var c) = l.content { c.trimStart = min(max(0, x), max(0, c.clipDuration - 0.1)); l.content = .video(c) } }
+            }), format: .number.precision(.fractionLength(0...1))).fieldStyle().frame(width: 64).multilineTextAlignment(.trailing)
+            Text("of \(StudioTimeline.clock(v.clipDuration))").font(DS.small).foregroundStyle(DS.text2)
+        }
+        HStack {
+            Text("Volume").font(DS.body).foregroundStyle(DS.text2)
+            Slider(value: videoBind(id, \.volume), in: 0...1).disabled(v.muted)
+        }
+        HStack {
+            Toggle("Mute", isOn: videoBind(id, \.muted)).toggleStyle(SFToggleStyle())
+            Toggle("Loop", isOn: videoBind(id, \.loop)).toggleStyle(SFToggleStyle())
+        }
+        .font(DS.body)
+    }
+
+    private func timingRow(_ layer: CreativeLayer, duration: Double) -> some View {
+        HStack(spacing: Space.sm) {
+            Text("Shows").font(DS.body).foregroundStyle(DS.text2)
+            TextField("0", value: Binding(get: { layer.start ?? 0 }, set: { x in
+                studio.changeLayer(layer.id) { l in let s = min(max(0, x), duration - 0.1); l.start = s <= 0 ? nil : s }
+            }), format: .number.precision(.fractionLength(0...1))).fieldStyle().frame(width: 56).multilineTextAlignment(.trailing)
+            Text("to").font(DS.body).foregroundStyle(DS.text2)
+            TextField("end", value: Binding(get: { layer.end ?? duration }, set: { x in
+                studio.changeLayer(layer.id) { l in let e = min(duration, max((l.start ?? 0) + 0.1, x)); l.end = e >= duration ? nil : e }
+            }), format: .number.precision(.fractionLength(0...1))).fieldStyle().frame(width: 56).multilineTextAlignment(.trailing)
+            Text("s").font(DS.body).foregroundStyle(DS.text2)
+        }
+        .help("When the layer appears and disappears in the video")
+    }
+
+    private func trackBind<T>(_ id: UUID, _ kp: WritableKeyPath<AudioTrack, T>) -> Binding<T> {
+        Binding(get: { studio.document?.audioTracks.first { $0.id == id }?[keyPath: kp] ?? AudioTrack(name: "", path: "", fileDuration: 0)[keyPath: kp] },
+                set: { value in studio.changeTrack(id) { $0[keyPath: kp] = value } })
+    }
+
+    private func secondsField(_ label: String, _ value: Binding<Double>) -> some View {
+        HStack {
+            Text(label).font(DS.body).foregroundStyle(DS.text2)
+            Spacer()
+            TextField("s", value: value, format: .number.precision(.fractionLength(0...1))).fieldStyle().frame(width: 64).multilineTextAlignment(.trailing)
+            Text("s").font(DS.body).foregroundStyle(DS.text2)
+        }
+    }
+
+    private func audioSection(_ t: AudioTrack) -> some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            SectionLabel("Audio · \(t.name)")
+            TextField("Name", text: trackBind(t.id, \.name)).fieldStyle()
+            KeyValueRow("File length", StudioTimeline.clock(t.fileDuration))
+            secondsField("Starts at", trackBind(t.id, \.start))
+            secondsField("Skip the first", trackBind(t.id, \.trimStart))
+            HStack {
+                Text("Volume").font(DS.body).foregroundStyle(DS.text2)
+                Slider(value: trackBind(t.id, \.volume), in: 0...1)
+            }
+            secondsField("Fade in", trackBind(t.id, \.fadeIn))
+            secondsField("Fade out", trackBind(t.id, \.fadeOut))
+            Toggle("Loop to the end of the video", isOn: trackBind(t.id, \.loop)).toggleStyle(SFToggleStyle()).font(DS.body)
+            Button("Remove Track", role: .destructive) { studio.removeTrack(t.id) }.buttonStyle(SecondaryButtonStyle())
         }
     }
 
@@ -786,7 +994,7 @@ struct StudioInspector: View {
             switch l.content {
             case .text(let t): (t.colorRole == nil || t.fontRole == nil) ? l.name : nil
             case .shape(let s): s.fillRole == nil && s.fill.a > 0.5 ? l.name : nil
-            case .image: nil
+            case .image, .video: nil
             }
         }
     }
@@ -802,14 +1010,14 @@ struct StudioInspector: View {
                 case .shape(var s):
                     if s.fillRole == nil && s.fill.a > 0.5 { s.fillRole = "brand.1" }
                     doc.layers[i].content = .shape(s)
-                case .image: break
+                case .image, .video: break
                 }
             }
         }
     }
 
     private func kindName(_ l: CreativeLayer) -> String {
-        switch l.content { case .text: "Text"; case .shape: "Shape"; case .image: "Image" }
+        switch l.content { case .text: "Text"; case .shape: "Shape"; case .image: "Image"; case .video: "Video" }
     }
 
     private func resolvedFont(_ t: TextLayer) -> String { model.brandKit?.style.font(t.fontRole) ?? t.fontName }
@@ -835,7 +1043,7 @@ struct StudioInspector: View {
             switch l.content {
             case .text(var t): t.colorRole = role; l.content = .text(t)
             case .shape(var s): s.fillRole = role; l.content = .shape(s)
-            case .image: break
+            case .image, .video: break
             }
         }
     }
@@ -845,7 +1053,7 @@ struct StudioInspector: View {
             switch l.content {
             case .text(var t): t.color = c; t.colorRole = nil; l.content = .text(t)
             case .shape(var s): s.fill = c; s.fillRole = nil; l.content = .shape(s)
-            case .image: break
+            case .image, .video: break
             }
         }
     }

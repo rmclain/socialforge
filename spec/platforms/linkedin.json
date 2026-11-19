@@ -5,20 +5,76 @@
   "status": "planned",
   "liveVerified": false,
   "sources": [
-    {"title": "LinkedIn Posts API", "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api", "checked": "2026-11-19"}
+    {
+      "title": "LinkedIn Posts API",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "LinkedIn Videos API",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "member_post", "name": "Profile post", "requiredScopes": ["w_member_social"], "needsDestination": "none"},
-    {"id": "organization_post", "name": "Company page post", "requiredScopes": ["w_organization_social"], "needsDestination": "organization"}
+    {
+      "id": "member_post",
+      "name": "Profile post",
+      "requiredScopes": [
+        "w_member_social"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "organization_post",
+      "name": "Company page post",
+      "requiredScopes": [
+        "w_organization_social"
+      ],
+      "needsDestination": "organization"
+    }
   ],
   "text": {
-    "commentary": {"max": 3000, "required": true, "enforced": true}
+    "commentary": {
+      "max": 3000,
+      "required": true,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "gif"],
+    "formats": [
+      "jpeg",
+      "png",
+      "gif"
+    ],
     "maxBytes": 36152320,
     "maxBytesEnforced": false,
-    "recommended": {"width": 1200, "height": 627, "aspect": "1.91:1"},
+    "recommended": {
+      "width": 1200,
+      "height": 627,
+      "aspect": "1.91:1"
+    },
     "recommendedMinWidth": 552
+  },
+  "video": {
+    "formats": [
+      "mp4"
+    ],
+    "codecs": [
+      "h264"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 524288000,
+    "minSeconds": 3,
+    "maxSeconds": 1800,
+    "recommended": {
+      "width": 1080,
+      "height": 1080,
+      "aspect": "1:1"
+    },
+    "maxFps": 60,
+    "note": "LinkedIn's Videos API lists 3 s to 30 min and 75 KB to 500 MB (its upload schema says 5 GB)."
   }
 }

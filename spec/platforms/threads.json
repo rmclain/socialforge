@@ -1,0 +1,85 @@
+{
+  "platform": "threads",
+  "name": "Threads",
+  "specVersion": "2026-11-19",
+  "status": "available",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Threads API: Posts",
+      "url": "https://developers.facebook.com/docs/threads/posts/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Threads: Long-lived access tokens",
+      "url": "https://developers.facebook.com/docs/threads/get-started/long-lived-tokens/",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "post",
+      "name": "Text post",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "media",
+      "name": "Photo or video (needs public media storage)",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "text": {
+      "max": 500,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg",
+      "png"
+    ],
+    "maxBytes": 8388608,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
+    "recommendedMinWidth": 320,
+    "note": "320 to 1440 px wide, aspect up to 10:1."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 1073741824,
+    "minSeconds": 1,
+    "maxSeconds": 300,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Up to 5 min and 1 GB, at most 1920 px wide."
+  }
+}

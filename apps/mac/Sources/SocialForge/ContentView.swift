@@ -524,7 +524,7 @@ struct PlatformBadge: View {
         RoundedRectangle(cornerRadius: size * 0.26, style: .continuous)
             .fill(Color(hex: Self.color(platform)))
             .frame(width: size, height: size)
-            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).strokeBorder(.white.opacity(platform == "x" ? 0.28 : 0)))
+            .overlay(RoundedRectangle(cornerRadius: size * 0.26, style: .continuous).strokeBorder(.white.opacity(["x", "tiktok", "threads"].contains(platform) ? 0.28 : 0)))
             .overlay(Text(Self.glyph(platform)).font(.system(size: size * 0.55, weight: .bold)).foregroundStyle(.white))
             .accessibilityLabel(PlatformRegistry.spec(platform)?.name ?? platform)
     }
@@ -535,6 +535,10 @@ struct PlatformBadge: View {
         case "facebook": 0x0866FF
         case "linkedin": 0x0A66C2
         case "x": 0x000000
+        case "tiktok": 0x111111
+        case "instagram": 0xD62976
+        case "youtube": 0xFF0033
+        case "threads": 0x101010
         default: 0x7C7C84
         }
     }
@@ -545,6 +549,10 @@ struct PlatformBadge: View {
         case "facebook": "f"
         case "linkedin": "in"
         case "x": "𝕏"
+        case "tiktok": "♪"
+        case "instagram": "IG"
+        case "youtube": "▶"
+        case "threads": "@"
         default: "?"
         }
     }

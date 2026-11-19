@@ -33,7 +33,12 @@ final class PublishRunner {
             let base = UserDefaults.standard.string(forKey: "pinterest.apiBase").flatMap(URL.init(string:)) ?? URL(string: "https://api.pinterest.com")!
             return PinterestTarget(apiBase: base)
         }
-        return nil
+        switch account.platform {
+        case "facebook": return FacebookPageTarget()
+        case "instagram": return InstagramTarget(media: PublicMediaSettings.host())
+        case "threads": return ThreadsTarget(media: PublicMediaSettings.host())
+        default: return nil
+        }
     }
 
     /// The app: hold the lock while open, publish every 30 seconds and on wake.
@@ -101,16 +106,31 @@ final class PublishRunner {
         }
         var image: Data?
         var contentType = "image/jpeg"
+        var mediaFile: URL?
+        var isVideo = false
         if let assetID = p.assetID, let asset = try? ctx.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.uuid == assetID })).first {
-            let variantID = p.variantID
-            let variant = variantID.flatMap { id in try? ctx.fetch(FetchDescriptor<MediaVariant>(predicate: #Predicate { $0.uuid == id })).first }
-            image = try? Data(contentsOf: variant?.url ?? asset.storedURL)
-            contentType = (variant?.format ?? asset.format) == "png" ? "image/png" : "image/jpeg"
+            if asset.kind == "video" {
+                // Videos upload from the file; they are never read into memory whole.
+                mediaFile = asset.storedURL
+                isVideo = true
+                contentType = asset.format == "mov" ? "video/quicktime" : "video/mp4"
+            } else {
+                let variantID = p.variantID
+                let variant = variantID.flatMap { id in try? ctx.fetch(FetchDescriptor<MediaVariant>(predicate: #Predicate { $0.uuid == id })).first }
+                let file = variant?.url ?? asset.storedURL
+                mediaFile = file
+                image = try? Data(contentsOf: file)
+                contentType = (variant?.format ?? asset.format) == "png" ? "image/png" : "image/jpeg"
+            }
         }
-        let input = PublishInput(idempotencyKey: p.idempotencyKey, accountID: account.serverID,
+        // Meta posts go to the Page, Instagram account, or Threads profile the account stands for.
+        let destination = ["facebook", "instagram", "threads"].contains(account.platform) ? account.platformID : p.boardID
+        var input = PublishInput(idempotencyKey: p.idempotencyKey, accountID: account.serverID,
                                  accessToken: account.isMock ? nil : Keychain.read(account.tokenKey),
-                                 title: p.title, description: p.desc, link: p.link, altText: p.altText, boardID: p.boardID,
+                                 title: p.title, description: p.desc, link: p.link, altText: p.altText, boardID: destination,
                                  image: image, contentType: contentType)
+        input.mediaFile = mediaFile
+        input.isVideo = isVideo
         let result = await PublishEngine.attempt(input, target: target, attempt: attemptNo,
                                                  hadUncertain: previous.contains { $0.outcome == "uncertain" },
                                                  firstTriedAt: p.firstTriedAt ?? .now, policy: policy)

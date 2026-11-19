@@ -37,6 +37,14 @@ public struct PublishInput: Sendable {
     public var boardID: String
     public var image: Data?
     public var contentType: String
+    /// The media file on disk (Meta uploads from it; Pinterest uses `image`).
+    public var mediaFile: URL?
+    public var isVideo: Bool = false
+    /// The post's text as Instagram, Facebook, and Threads show it.
+    public var caption: String {
+        let d = description.trimmingCharacters(in: .whitespacesAndNewlines)
+        return d.isEmpty ? title.trimmingCharacters(in: .whitespacesAndNewlines) : d
+    }
     public init(idempotencyKey: String, accountID: String, accessToken: String?, title: String, description: String, link: String,
                 altText: String, boardID: String, image: Data?, contentType: String) {
         self.idempotencyKey = idempotencyKey; self.accountID = accountID; self.accessToken = accessToken; self.title = title

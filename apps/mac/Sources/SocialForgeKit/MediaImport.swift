@@ -7,7 +7,7 @@ import UniformTypeIdentifiers
 public struct ScannedFile: Sendable, Equatable {
     public let url: URL
     public let kind: Kind
-    public enum Kind: String, Sendable { case image, video }
+    public enum Kind: String, Sendable { case image, video, audio }
 }
 
 public struct SkippedFile: Sendable, Equatable {
@@ -24,11 +24,13 @@ public struct ScanResult: Sendable {
 public enum MediaFormats {
     public static let images: [UTType] = [.jpeg, .png, .heic, .heif, .webP, .tiff, .gif, .bmp]
     public static let videos: [UTType] = [.mpeg4Movie, .quickTimeMovie, .appleProtectedMPEG4Video]
+    public static let audio: [UTType] = [.mp3, .mpeg4Audio, .wav, .aiff] + [UTType(filenameExtension: "flac"), UTType(filenameExtension: "caf")].compactMap { $0 }
 
     public static func kind(of url: URL) -> ScannedFile.Kind? {
         guard let type = UTType(filenameExtension: url.pathExtension.lowercased()) else { return nil }
         if images.contains(where: { type.conforms(to: $0) }) { return .image }
         if videos.contains(where: { type.conforms(to: $0) }) { return .video }
+        if audio.contains(where: { type.conforms(to: $0) }) { return .audio }
         return nil
     }
 }
@@ -167,6 +169,8 @@ public struct ImportOutcome: Sendable {
         public let bytes: Int
         public let kind: ScannedFile.Kind
         public let info: ImageInfo?
+        /// Length and size of a video or audio file.
+        public var av: AVMediaInfo? = nil
     }
     public var imported: [Imported] = []
     /// Files whose hash is already in the library or earlier in this import.
@@ -201,7 +205,12 @@ public enum MediaImporter {
                         if file.kind == .image && info == nil {
                             return (index, file, .failure(CocoaError(.fileReadCorruptFile)), hash)
                         }
-                        return (index, file, .success(.init(source: file.url, stored: stored, hash: hash, bytes: bytes, kind: file.kind, info: info)), hash)
+                        var av: AVMediaInfo?
+                        if file.kind != .image {
+                            av = await AVProbe.info(stored)
+                            if av == nil { return (index, file, .failure(CocoaError(.fileReadUnknown)), hash) }
+                        }
+                        return (index, file, .success(.init(source: file.url, stored: stored, hash: hash, bytes: bytes, kind: file.kind, info: info, av: av)), hash)
                     } catch {
                         return (index, file, .failure(error), nil)
                     }
@@ -229,7 +238,9 @@ public enum MediaImporter {
             case .success(nil):
                 outcome.duplicates.append((file.url, hash ?? ""))
             case .failure(let error):
-                let reason = (error as? CocoaError)?.code == .fileReadCorruptFile ? "Not a readable image" : error.localizedDescription
+                let code = (error as? CocoaError)?.code
+                let reason = code == .fileReadCorruptFile ? "Not a readable image"
+                    : code == .fileReadUnknown ? "Not a playable \(file.kind == .audio ? "audio" : "video") file" : error.localizedDescription
                 outcome.failed.append(SkippedFile(url: file.url, reason: reason))
             }
         }

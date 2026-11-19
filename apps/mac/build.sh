@@ -49,6 +49,9 @@ fi
 # Bundled fonts (Instrument Serif, SIL Open Font License), registered at launch.
 mkdir -p "$app/Contents/Resources/Fonts"
 cp "$here/Fonts/"*.ttf "$here/Fonts/OFL.txt" "$app/Contents/Resources/Fonts/"
+# Starter ComfyUI workflows (API format) for AI Studio › Workflow › Add Starter Workflows.
+mkdir -p "$app/Contents/Resources/Workflows"
+cp "$here/../../comfyui/workflows/api/"*.json "$app/Contents/Resources/Workflows/"
 # The background publisher's launch agent (registered by the app with SMAppService).
 mkdir -p "$app/Contents/Library/LaunchAgents"
 cp "$here/LaunchAgents/"*.plist "$app/Contents/Library/LaunchAgents/"

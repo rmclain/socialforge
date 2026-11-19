@@ -33,6 +33,8 @@ sed -e "s/__BUILD__/$(date +%Y%m%d%H%M)/" "$mac/Info.plist.in" > "$app/Contents/
 [[ -f "$mac/Resources/Assets.car" ]] || "$mac/tools/make_icon.sh"
 cp -X "$mac/Resources/Assets.car" "$mac/Resources/AppIcon.icns" "$app/Contents/Resources/"
 cp "$mac/Fonts/"*.ttf "$mac/Fonts/OFL.txt" "$app/Contents/Resources/Fonts/"
+mkdir -p "$app/Contents/Resources/Workflows"
+cp "$root/comfyui/workflows/api/"*.json "$app/Contents/Resources/Workflows/"
 cp "$mac/LaunchAgents/"*.plist "$app/Contents/Library/LaunchAgents/"
 xattr -cr "$app"
 if [[ "$identity" == "-" ]]; then

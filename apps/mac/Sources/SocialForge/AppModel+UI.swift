@@ -43,7 +43,7 @@ extension AppModel {
         case .composer: return composer.subtitle
         case .media: return "\(workspaceAssetCount) items"
         case .studio: return studio.document.map { "\($0.name) · \($0.width) × \($0.height)" } ?? "Designs and brand templates"
-        case .ai: return "Backgrounds, copy, and generation history"
+        case .ai: return "Backgrounds, video, music, copy, and history"
         case .bulk: return "Drag images in, pick platforms, set a cadence"
         case .automations: return "Triggers and steps that prepare posts for your approval"
         case .campaigns: return "Goals, dates, UTM links, and the posts in each campaign"

@@ -2,22 +2,99 @@
   "platform": "facebook",
   "name": "Facebook Page",
   "specVersion": "2026-11-19",
-  "status": "planned",
+  "status": "available",
   "liveVerified": false,
   "sources": [
-    {"title": "Pages API: Posts", "url": "https://developers.facebook.com/docs/pages-api/posts", "checked": "2026-11-19"}
+    {
+      "title": "Pages API: Posts",
+      "url": "https://developers.facebook.com/docs/pages-api/posts",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Reels Publishing API",
+      "url": "https://developers.facebook.com/documentation/video-api/guides/reels-publishing",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Reels Publishing API",
+      "url": "https://developers.facebook.com/docs/video-api/guides/reels-publishing",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "page_photo", "name": "Photo post", "requiredScopes": ["pages_manage_posts", "pages_read_engagement"], "needsDestination": "page"}
+    {
+      "id": "page_text",
+      "name": "Text post",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    },
+    {
+      "id": "page_photo",
+      "name": "Photo post",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    },
+    {
+      "id": "page_reel",
+      "name": "Reel",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    }
   ],
   "text": {
-    "message": {"max": 63206, "required": false, "enforced": true}
+    "message": {
+      "max": 63206,
+      "required": false,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "gif", "bmp", "tiff"],
+    "formats": [
+      "jpeg",
+      "png",
+      "gif",
+      "bmp",
+      "tiff"
+    ],
     "maxBytes": 10485760,
     "maxBytesEnforced": false,
-    "recommended": {"width": 1080, "height": 1350, "aspect": "4:5"},
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
     "recommendedMinWidth": 600
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "minSeconds": 3,
+    "maxSeconds": 90,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 24,
+    "note": "Page Reels: 3 to 90 s, at least 540 × 960, 24 to 60 fps, AAC-LC 48 kHz audio."
   }
 }

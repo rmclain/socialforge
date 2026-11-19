@@ -7,23 +7,191 @@ enum PlatformSpecData {
   "platform": "facebook",
   "name": "Facebook Page",
   "specVersion": "2026-11-19",
-  "status": "planned",
+  "status": "available",
   "liveVerified": false,
   "sources": [
-    {"title": "Pages API: Posts", "url": "https://developers.facebook.com/docs/pages-api/posts", "checked": "2026-11-19"}
+    {
+      "title": "Pages API: Posts",
+      "url": "https://developers.facebook.com/docs/pages-api/posts",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Reels Publishing API",
+      "url": "https://developers.facebook.com/documentation/video-api/guides/reels-publishing",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Reels Publishing API",
+      "url": "https://developers.facebook.com/docs/video-api/guides/reels-publishing",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "page_photo", "name": "Photo post", "requiredScopes": ["pages_manage_posts", "pages_read_engagement"], "needsDestination": "page"}
+    {
+      "id": "page_text",
+      "name": "Text post",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    },
+    {
+      "id": "page_photo",
+      "name": "Photo post",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    },
+    {
+      "id": "page_reel",
+      "name": "Reel",
+      "requiredScopes": [
+        "pages_manage_posts",
+        "pages_read_engagement"
+      ],
+      "needsDestination": "page"
+    }
   ],
   "text": {
-    "message": {"max": 63206, "required": false, "enforced": true}
+    "message": {
+      "max": 63206,
+      "required": false,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "gif", "bmp", "tiff"],
+    "formats": [
+      "jpeg",
+      "png",
+      "gif",
+      "bmp",
+      "tiff"
+    ],
     "maxBytes": 10485760,
     "maxBytesEnforced": false,
-    "recommended": {"width": 1080, "height": 1350, "aspect": "4:5"},
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
     "recommendedMinWidth": 600
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "minSeconds": 3,
+    "maxSeconds": 90,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 24,
+    "note": "Page Reels: 3 to 90 s, at least 540 × 960, 24 to 60 fps, AAC-LC 48 kHz audio."
+  }
+}
+"""#,
+        "instagram": #"""
+{
+  "platform": "instagram",
+  "name": "Instagram",
+  "specVersion": "2026-11-19",
+  "status": "available",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Instagram Platform: Content Publishing",
+      "url": "https://developers.facebook.com/docs/instagram-platform/content-publishing/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "IG User Media reference",
+      "url": "https://developers.facebook.com/documentation/instagram-platform/instagram-graph-api/reference/ig-user/media",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Instagram resumable uploads",
+      "url": "https://developers.facebook.com/documentation/instagram-platform/content-publishing/resumable-uploads",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "image",
+      "name": "Photo post (needs public media storage)",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "reel",
+      "name": "Reel",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "caption": {
+      "max": 2200,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg"
+    ],
+    "maxBytes": 8388608,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
+    "recommendedMinWidth": 320,
+    "note": "JPEG only, 320 to 1440 px wide, aspect 4:5 to 1.91:1. Business or creator accounts only; 100 API posts per 24 hours."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 314572800,
+    "minSeconds": 3,
+    "maxSeconds": 900,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Reels: 3 s to 15 min, at most 1920 px wide, 25 Mbps video, AAC up to 48 kHz at 128 kbps, moov atom first."
   }
 }
 """#,
@@ -35,21 +203,77 @@ enum PlatformSpecData {
   "status": "planned",
   "liveVerified": false,
   "sources": [
-    {"title": "LinkedIn Posts API", "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api", "checked": "2026-11-19"}
+    {
+      "title": "LinkedIn Posts API",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "LinkedIn Videos API",
+      "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/videos-api",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "member_post", "name": "Profile post", "requiredScopes": ["w_member_social"], "needsDestination": "none"},
-    {"id": "organization_post", "name": "Company page post", "requiredScopes": ["w_organization_social"], "needsDestination": "organization"}
+    {
+      "id": "member_post",
+      "name": "Profile post",
+      "requiredScopes": [
+        "w_member_social"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "organization_post",
+      "name": "Company page post",
+      "requiredScopes": [
+        "w_organization_social"
+      ],
+      "needsDestination": "organization"
+    }
   ],
   "text": {
-    "commentary": {"max": 3000, "required": true, "enforced": true}
+    "commentary": {
+      "max": 3000,
+      "required": true,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "gif"],
+    "formats": [
+      "jpeg",
+      "png",
+      "gif"
+    ],
     "maxBytes": 36152320,
     "maxBytesEnforced": false,
-    "recommended": {"width": 1200, "height": 627, "aspect": "1.91:1"},
+    "recommended": {
+      "width": 1200,
+      "height": 627,
+      "aspect": "1.91:1"
+    },
     "recommendedMinWidth": 552
+  },
+  "video": {
+    "formats": [
+      "mp4"
+    ],
+    "codecs": [
+      "h264"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 524288000,
+    "minSeconds": 3,
+    "maxSeconds": 1800,
+    "recommended": {
+      "width": 1080,
+      "height": 1080,
+      "aspect": "1:1"
+    },
+    "maxFps": 60,
+    "note": "LinkedIn's Videos API lists 3 s to 30 min and 75 KB to 500 MB (its upload schema says 5 GB)."
   }
 }
 """#,
@@ -61,26 +285,272 @@ enum PlatformSpecData {
   "status": "available",
   "liveVerified": false,
   "sources": [
-    {"title": "Pinterest API v5: Create Pin", "url": "https://developers.pinterest.com/docs/api/v5/pins-create/", "checked": "2026-11-19"},
-    {"title": "Pinterest OAuth", "url": "https://developers.pinterest.com/docs/getting-started/authentication-and-scopes/", "checked": "2026-11-19"},
-    {"title": "Pin specs", "url": "https://help.pinterest.com/en/business/article/pinterest-product-specs", "checked": "2026-11-19"}
+    {
+      "title": "Pinterest API v5: Create Pin",
+      "url": "https://developers.pinterest.com/docs/api/v5/pins-create/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Pinterest OAuth",
+      "url": "https://developers.pinterest.com/docs/getting-started/authentication-and-scopes/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Pin specs",
+      "url": "https://help.pinterest.com/en/business/article/pinterest-product-specs",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Create a Pin from an image or video",
+      "url": "https://help.pinterest.com/en/business/article/video-pins",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "image_pin", "name": "Image Pin", "requiredScopes": ["boards:read", "pins:write"], "needsDestination": "board"}
+    {
+      "id": "image_pin",
+      "name": "Image Pin",
+      "requiredScopes": [
+        "boards:read",
+        "pins:write"
+      ],
+      "needsDestination": "board"
+    }
   ],
   "text": {
-    "title": {"max": 100, "required": false, "enforced": true},
-    "description": {"max": 800, "required": false, "enforced": true},
-    "alt_text": {"max": 500, "required": false, "enforced": true},
-    "link": {"max": 2048, "required": false, "enforced": true}
+    "title": {
+      "max": 100,
+      "required": false,
+      "enforced": true
+    },
+    "description": {
+      "max": 800,
+      "required": false,
+      "enforced": true
+    },
+    "alt_text": {
+      "max": 500,
+      "required": false,
+      "enforced": true
+    },
+    "link": {
+      "max": 2048,
+      "required": false,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "webp", "bmp", "tiff"],
+    "formats": [
+      "jpeg",
+      "png",
+      "webp",
+      "bmp",
+      "tiff"
+    ],
     "maxBytes": 20971520,
     "maxBytesEnforced": true,
-    "recommended": {"width": 1000, "height": 1500, "aspect": "2:3"},
+    "recommended": {
+      "width": 1000,
+      "height": 1500,
+      "aspect": "2:3"
+    },
     "recommendedMinWidth": 600,
     "note": "Other ratios are accepted; tall images may be cropped in the feed."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "m4v",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "minSeconds": 4,
+    "maxSeconds": 300,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "note": "Video Pins need a cover image. Pinterest's help center gives 4 s to 5 min; no API file-size limit is published."
+  }
+}
+"""#,
+        "threads": #"""
+{
+  "platform": "threads",
+  "name": "Threads",
+  "specVersion": "2026-11-19",
+  "status": "available",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Threads API: Posts",
+      "url": "https://developers.facebook.com/docs/threads/posts/",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Threads: Long-lived access tokens",
+      "url": "https://developers.facebook.com/docs/threads/get-started/long-lived-tokens/",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "post",
+      "name": "Text post",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "media",
+      "name": "Photo or video (needs public media storage)",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "text": {
+      "max": 500,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg",
+      "png"
+    ],
+    "maxBytes": 8388608,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1350,
+      "aspect": "4:5"
+    },
+    "recommendedMinWidth": 320,
+    "note": "320 to 1440 px wide, aspect up to 10:1."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 1073741824,
+    "minSeconds": 1,
+    "maxSeconds": 300,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Up to 5 min and 1 GB, at most 1920 px wide."
+  }
+}
+"""#,
+        "tiktok": #"""
+{
+  "platform": "tiktok",
+  "name": "TikTok",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Content Posting API: Media Transfer Guide",
+      "url": "https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Content Posting API: Query Creator Info",
+      "url": "https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "video",
+      "name": "Video",
+      "requiredScopes": [
+        "video.publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "photo",
+      "name": "Photo post",
+      "requiredScopes": [
+        "video.publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "caption": {
+      "max": 2200,
+      "required": false,
+      "enforced": false
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg",
+      "webp"
+    ],
+    "maxBytes": 20971520,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "recommendedMinWidth": 720,
+    "note": "Photo posts: JPEG or WebP, up to 1080p and 20 MB each."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov",
+      "webm"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 4294967296,
+    "minSeconds": 3,
+    "maxSeconds": 600,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Every creator can post 3 min; some accounts allow 5 or 10 min (TikTok reports each creator's limit). 360 to 4096 px per side. Posts from unaudited apps stay private."
   }
 }
 """#,
@@ -92,21 +562,150 @@ enum PlatformSpecData {
   "status": "planned",
   "liveVerified": false,
   "sources": [
-    {"title": "X API v2: Create Post", "url": "https://docs.x.com/x-api/posts/create-post", "checked": "2026-11-19"}
+    {
+      "title": "X API v2: Create Post",
+      "url": "https://docs.x.com/x-api/posts/create-post",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "X API media best practices",
+      "url": "https://docs.x.com/x-api/media/quickstart/best-practices",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "text_post", "name": "Post", "requiredScopes": ["tweet.write", "users.read"], "needsDestination": "none"},
-    {"id": "image_post", "name": "Post with image", "requiredScopes": ["tweet.write", "users.read", "media.write"], "needsDestination": "none"}
+    {
+      "id": "text_post",
+      "name": "Post",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "image_post",
+      "name": "Post with image",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read",
+        "media.write"
+      ],
+      "needsDestination": "none"
+    }
   ],
   "text": {
-    "text": {"max": 280, "required": true, "enforced": true}
+    "text": {
+      "max": 280,
+      "required": true,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "webp", "gif"],
+    "formats": [
+      "jpeg",
+      "png",
+      "webp",
+      "gif"
+    ],
     "maxBytes": 5242880,
     "maxBytesEnforced": true,
-    "recommended": {"width": 1600, "height": 900, "aspect": "16:9"},
+    "recommended": {
+      "width": 1600,
+      "height": 900,
+      "aspect": "16:9"
+    },
     "recommendedMinWidth": 600
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 8589934592,
+    "minSeconds": 0.5,
+    "maxSeconds": 1200,
+    "recommended": {
+      "width": 1920,
+      "height": 1080,
+      "aspect": "16:9"
+    },
+    "maxFps": 60,
+    "note": "Default accounts: 20 min and 8 GB; Premium: 125 min and 16 GB. H.264 High Profile, yuv420p, AAC-LC at 128 kbps or more."
+  }
+}
+"""#,
+        "youtube": #"""
+{
+  "platform": "youtube",
+  "name": "YouTube Shorts",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "YouTube Data API: Videos.insert",
+      "url": "https://developers.google.com/youtube/v3/docs/videos/insert",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Understand three-minute YouTube Shorts",
+      "url": "https://support.google.com/youtube/answer/15424877",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "short",
+      "name": "Short",
+      "requiredScopes": [
+        "https://www.googleapis.com/auth/youtube.upload"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "title": {
+      "max": 100,
+      "required": true,
+      "enforced": true
+    },
+    "description": {
+      "max": 5000,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov",
+      "webm"
+    ],
+    "codecs": [
+      "h264",
+      "hevc",
+      "vp9"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 274877906944,
+    "minSeconds": 1,
+    "maxSeconds": 180,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "note": "Shorts are square or vertical and up to 3 min. No image posts. YouTube publishes no Shorts codec rules; H.264 with AAC is safe."
   }
 }
 """#,

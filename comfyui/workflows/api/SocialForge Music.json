@@ -1,0 +1,91 @@
+{
+  "1": {
+    "class_type": "CheckpointLoaderSimple",
+    "inputs": {
+      "ckpt_name": "yue2_3b_bf16.safetensors"
+    }
+  },
+  "2": {
+    "class_type": "YuE2GenerateMusic",
+    "inputs": {
+      "clip": [
+        "1",
+        1
+      ],
+      "style": "English, female vocal, indie pop, acoustic guitar, warm, 100 BPM",
+      "lyrics": "[Verse 1]\nMorning light on a wooden table\nSteam is rising, I am able\n\n[Chorus]\nSing it out, we are alive\nHold on tight, we will survive",
+      "abc": "",
+      "seed": 0,
+      "mode": "full",
+      "max_duration": 60.0,
+      "temperature": 1.0,
+      "top_p": 0.95,
+      "top_k": 100,
+      "repetition_penalty": 1.2,
+      "cfg_scale": 1.0
+    }
+  },
+  "3": {
+    "class_type": "EmptyYuE2LatentAudio",
+    "inputs": {
+      "seconds": [
+        "2",
+        1
+      ],
+      "batch_size": 1
+    }
+  },
+  "4": {
+    "class_type": "KSampler",
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "positive": [
+        "2",
+        0
+      ],
+      "negative": [
+        "2",
+        0
+      ],
+      "latent_image": [
+        "3",
+        0
+      ],
+      "seed": 0,
+      "steps": 32,
+      "cfg": 1.0,
+      "sampler_name": "dpm_2",
+      "scheduler": "sgm_uniform",
+      "denoise": 1.0
+    }
+  },
+  "5": {
+    "class_type": "VAEDecodeAudioTiled",
+    "inputs": {
+      "samples": [
+        "4",
+        0
+      ],
+      "vae": [
+        "1",
+        2
+      ],
+      "tile_size": 512,
+      "overlap": 64
+    }
+  },
+  "6": {
+    "class_type": "SaveAudioMP3",
+    "inputs": {
+      "audio": [
+        "5",
+        0
+      ],
+      "filename_prefix": "SocialForge",
+      "quality": "320k"
+    }
+  }
+}

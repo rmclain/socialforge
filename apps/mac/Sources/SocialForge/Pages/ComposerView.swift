@@ -25,7 +25,7 @@ final class ComposerModel {
     var assetID: UUID?
     var campaignID: UUID?
     var when = Calendar.current.date(byAdding: .day, value: 1, to: Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: .now)!)!
-    var variants: [Variant] = ["pinterest", "facebook", "x", "linkedin"].map { Variant(platform: $0, enabled: $0 == "pinterest") }
+    var variants: [Variant] = ["pinterest", "instagram", "facebook", "threads", "x", "linkedin"].map { Variant(platform: $0, enabled: $0 == "pinterest") }
     var previewPlatform = "pinterest"
     var message: String?
 
@@ -33,7 +33,7 @@ final class ComposerModel {
 
     /// The design's tab names: Pin, FB, X, In.
     static func short(_ p: String) -> String {
-        switch p { case "pinterest": "Pin"; case "facebook": "FB"; case "linkedin": "In"; default: "X" }
+        switch p { case "pinterest": "Pin"; case "facebook": "FB"; case "instagram": "IG"; case "threads": "Threads"; case "linkedin": "In"; default: "X" }
     }
 
     func startNew(model: AppModel) {
@@ -42,7 +42,11 @@ final class ComposerModel {
         hashtags = (model.brandKit?.hashtags ?? []).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "# ")) }
         assetID = model.mediaSelection.first
         if let a = model.asset(assetID) { title = a.title; link = a.productURL; altText = a.altText }
-        variants = ["pinterest", "facebook", "x", "linkedin"].map { Variant(platform: $0, enabled: $0 == "pinterest") }
+        variants = ["pinterest", "instagram", "facebook", "threads", "x", "linkedin"].map { Variant(platform: $0, enabled: $0 == "pinterest") }
+        // Meta accounts post to the Page or profile itself: preselect the first connected one.
+        for i in variants.indices where variants[i].platform != "pinterest" {
+            if let a = model.accounts.first(where: { $0.platform == variants[i].platform && $0.status == "connected" }) { variants[i].accountID = a.serverID }
+        }
         if let pin = model.accounts.first(where: { $0.platform == "pinterest" }) {
             variants[0].accountID = pin.serverID
             variants[0].boardID = model.boards[pin.serverID]?.first?.id ?? ""
@@ -77,7 +81,7 @@ final class ComposerModel {
         let asset = model.asset(assetID)
         return PostDraft(platform: v.platform, title: a.title, description: a.text, link: link, altText: altText,
                          destinationID: v.platform == "pinterest" ? (v.boardID.isEmpty ? nil : v.boardID) : "none",
-                         image: asset?.imageFacts)
+                         image: asset?.kind == "image" ? asset?.imageFacts : nil)
     }
 
     func issues(_ v: Variant, model: AppModel) -> [ValidationIssue] {
@@ -91,6 +95,24 @@ final class ComposerModel {
         }
         if v.platform == "pinterest", v.accountID.isEmpty { out.append(ValidationIssue(.error, "account", "Choose a Pinterest account.")) }
         if assetID == nil && v.platform == "pinterest" { out.append(ValidationIssue(.error, "image", "A Pin needs an image.")) }
+        let asset = model.asset(assetID)
+        if ["facebook", "instagram", "threads"].contains(v.platform) {
+            let name = PlatformRegistry.spec(v.platform)?.name ?? v.platform
+            if v.accountID.isEmpty { out.append(ValidationIssue(.error, "account", "Connect a \(name) account in Accounts, then choose it.")) }
+            if v.platform == "instagram" && asset == nil { out.append(ValidationIssue(.error, "image", "Instagram posts need a photo or a video.")) }
+            let needsStorage = (v.platform == "instagram" && asset?.kind == "image") || (v.platform == "threads" && asset != nil)
+            if needsStorage && PublicMediaSettings.config == nil {
+                out.append(ValidationIssue(.error, "image", "\(name) fetches this media from a public address. Set up public media storage in Settings › Publishing."))
+            }
+        }
+        if let asset, asset.kind == "video" {
+            if v.platform == "pinterest" { out.append(ValidationIssue(.error, "video", "Video Pins aren't built yet; Pinterest takes the image only.")) }
+            else {
+                out += PostValidator.validateVideo(platform: v.platform, seconds: asset.duration, width: asset.width, height: asset.height,
+                                                   bytes: asset.bytes, format: asset.format)
+            }
+        }
+        if asset?.kind == "audio" { out.append(ValidationIssue(.error, "media", "Audio can't be posted on its own. Add it to a video in Creative Studio.")) }
         return out
     }
 
@@ -342,7 +364,7 @@ struct ComposerInspector: View {
                                 PlatformBadge(platform: v.platform, size: 28)
                                 VStack(alignment: .leading, spacing: 1) {
                                     if accounts.isEmpty {
-                                        Text(PlatformRegistry.spec(v.platform)?.isAvailable == true ? "No account connected" : "\(PlatformRegistry.spec(v.platform)?.name ?? v.platform): milestone 4")
+                                        Text(PlatformRegistry.spec(v.platform)?.isAvailable == true ? "No account connected" : "\(PlatformRegistry.spec(v.platform)?.name ?? v.platform): drafts only")
                                             .font(DS.body).foregroundStyle(DS.text2)
                                     } else {
                                         Picker("", selection: $c.variants[i].accountID) {

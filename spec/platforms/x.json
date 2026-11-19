@@ -5,20 +5,81 @@
   "status": "planned",
   "liveVerified": false,
   "sources": [
-    {"title": "X API v2: Create Post", "url": "https://docs.x.com/x-api/posts/create-post", "checked": "2026-11-19"}
+    {
+      "title": "X API v2: Create Post",
+      "url": "https://docs.x.com/x-api/posts/create-post",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "X API media best practices",
+      "url": "https://docs.x.com/x-api/media/quickstart/best-practices",
+      "checked": "2026-11-19"
+    }
   ],
   "contentTypes": [
-    {"id": "text_post", "name": "Post", "requiredScopes": ["tweet.write", "users.read"], "needsDestination": "none"},
-    {"id": "image_post", "name": "Post with image", "requiredScopes": ["tweet.write", "users.read", "media.write"], "needsDestination": "none"}
+    {
+      "id": "text_post",
+      "name": "Post",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "image_post",
+      "name": "Post with image",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read",
+        "media.write"
+      ],
+      "needsDestination": "none"
+    }
   ],
   "text": {
-    "text": {"max": 280, "required": true, "enforced": true}
+    "text": {
+      "max": 280,
+      "required": true,
+      "enforced": true
+    }
   },
   "image": {
-    "formats": ["jpeg", "png", "webp", "gif"],
+    "formats": [
+      "jpeg",
+      "png",
+      "webp",
+      "gif"
+    ],
     "maxBytes": 5242880,
     "maxBytesEnforced": true,
-    "recommended": {"width": 1600, "height": 900, "aspect": "16:9"},
+    "recommended": {
+      "width": 1600,
+      "height": 900,
+      "aspect": "16:9"
+    },
     "recommendedMinWidth": 600
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov"
+    ],
+    "codecs": [
+      "h264"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 8589934592,
+    "minSeconds": 0.5,
+    "maxSeconds": 1200,
+    "recommended": {
+      "width": 1920,
+      "height": 1080,
+      "aspect": "16:9"
+    },
+    "maxFps": 60,
+    "note": "Default accounts: 20 min and 8 GB; Premium: 125 min and 16 GB. H.264 High Profile, yuv420p, AAC-LC at 128 kbps or more."
   }
 }

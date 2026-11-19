@@ -9,7 +9,9 @@ export interface PlatformSpec {
   liveVerified: boolean
   contentTypes: { id: string, name: string, requiredScopes: string[], needsDestination: string }[]
   text: Record<string, { max: number, required: boolean, enforced: boolean }>
-  image: { formats: string[], maxBytes: number, maxBytesEnforced: boolean }
+  /** Absent for platforms without image posts (YouTube Shorts). */
+  image?: { formats: string[], maxBytes: number, maxBytesEnforced: boolean }
+  video?: { formats: string[], maxBytes?: number, minSeconds?: number, maxSeconds?: number }
 }
 
 export function loadSpecs (dir: string): Map<string, PlatformSpec> {
@@ -47,7 +49,8 @@ export function validatePublication (spec: PlatformSpec | undefined, payload: Pi
     if (payload.link && !/^https?:\/\/[^\s/]+/i.test(payload.link)) problems.push('The link must start with http:// or https://.')
     if (!media) problems.push('A Pin needs an image.')
   }
-  if (media) {
+  if (media && !spec.image) problems.push(`${spec.name} does not take image posts.`)
+  if (media && spec.image) {
     const format = media.contentType.replace('image/', '').replace('jpg', 'jpeg')
     if (!spec.image.formats.includes(format)) problems.push(`${media.contentType} is not accepted by ${spec.name}.`)
     if (spec.image.maxBytesEnforced && media.bytes > spec.image.maxBytes) problems.push(`The image is larger than ${spec.image.maxBytes / 1_048_576} MB.`)

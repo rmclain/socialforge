@@ -1,0 +1,66 @@
+{
+  "platform": "youtube",
+  "name": "YouTube Shorts",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "YouTube Data API: Videos.insert",
+      "url": "https://developers.google.com/youtube/v3/docs/videos/insert",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Understand three-minute YouTube Shorts",
+      "url": "https://support.google.com/youtube/answer/15424877",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "short",
+      "name": "Short",
+      "requiredScopes": [
+        "https://www.googleapis.com/auth/youtube.upload"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "title": {
+      "max": 100,
+      "required": true,
+      "enforced": true
+    },
+    "description": {
+      "max": 5000,
+      "required": false,
+      "enforced": true
+    }
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov",
+      "webm"
+    ],
+    "codecs": [
+      "h264",
+      "hevc",
+      "vp9"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 274877906944,
+    "minSeconds": 1,
+    "maxSeconds": 180,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "note": "Shorts are square or vertical and up to 3 min. No image posts. YouTube publishes no Shorts codec rules; H.264 with AAC is safe."
+  }
+}

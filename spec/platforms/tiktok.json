@@ -1,0 +1,84 @@
+{
+  "platform": "tiktok",
+  "name": "TikTok",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {
+      "title": "Content Posting API: Media Transfer Guide",
+      "url": "https://developers.tiktok.com/doc/content-posting-api-media-transfer-guide",
+      "checked": "2026-11-19"
+    },
+    {
+      "title": "Content Posting API: Query Creator Info",
+      "url": "https://developers.tiktok.com/docs/en/content-posting-api-reference-query-creator-info",
+      "checked": "2026-11-19"
+    }
+  ],
+  "contentTypes": [
+    {
+      "id": "video",
+      "name": "Video",
+      "requiredScopes": [
+        "video.publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "photo",
+      "name": "Photo post",
+      "requiredScopes": [
+        "video.publish"
+      ],
+      "needsDestination": "none"
+    }
+  ],
+  "text": {
+    "caption": {
+      "max": 2200,
+      "required": false,
+      "enforced": false
+    }
+  },
+  "image": {
+    "formats": [
+      "jpeg",
+      "webp"
+    ],
+    "maxBytes": 20971520,
+    "maxBytesEnforced": true,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "recommendedMinWidth": 720,
+    "note": "Photo posts: JPEG or WebP, up to 1080p and 20 MB each."
+  },
+  "video": {
+    "formats": [
+      "mp4",
+      "mov",
+      "webm"
+    ],
+    "codecs": [
+      "h264",
+      "hevc"
+    ],
+    "audio": [
+      "aac"
+    ],
+    "maxBytes": 4294967296,
+    "minSeconds": 3,
+    "maxSeconds": 600,
+    "recommended": {
+      "width": 1080,
+      "height": 1920,
+      "aspect": "9:16"
+    },
+    "maxFps": 60,
+    "minFps": 23,
+    "note": "Every creator can post 3 min; some accounts allow 5 or 10 min (TikTok reports each creator's limit). 360 to 4096 px per side. Posts from unaudited apps stay private."
+  }
+}

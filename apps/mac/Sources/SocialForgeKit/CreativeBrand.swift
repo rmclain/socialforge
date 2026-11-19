@@ -46,6 +46,8 @@ extension CreativeDocument {
             case .image(var i):
                 if i.role == "logo", let logo = brand.logoPath { i.path = logo }
                 l.content = .image(i)
+            case .video:
+                break
             }
             return l
         }
@@ -106,6 +108,9 @@ extension CreativeDocument {
             case .shape(var sh):
                 sh.cornerRadius *= s
                 l.content = .shape(sh)
+            case .video(var v):
+                v.cornerRadius = v.cornerRadius.map { $0 * s }
+                l.content = .video(v)
             case .image(var i):
                 i.cornerRadius = i.cornerRadius.map { $0 * s }
                 l.content = .image(i)
@@ -137,5 +142,17 @@ public struct CanvasPreset: Sendable, Hashable, Identifiable {
         CanvasPreset(id: "li", name: "LinkedIn", platform: "linkedin", width: 1200, height: 1200, ratio: "1:1"),
         CanvasPreset(id: "story", name: "Story", platform: "instagram", width: 1080, height: 1920, ratio: "9:16"),
         CanvasPreset(id: "ig", name: "Instagram Portrait", platform: "instagram", width: 1080, height: 1350, ratio: "4:5"),  // grid: ok platform pixel size
+    ]
+
+    /// Video canvases. Every short-video platform takes 9:16 at 1080 × 1920.
+    public static let video: [CanvasPreset] = [
+        CanvasPreset(id: "tiktok", name: "TikTok", platform: "tiktok", width: 1080, height: 1920, ratio: "9:16"),
+        CanvasPreset(id: "reels", name: "Instagram Reels", platform: "instagram", width: 1080, height: 1920, ratio: "9:16"),
+        CanvasPreset(id: "shorts", name: "YouTube Shorts", platform: "youtube", width: 1080, height: 1920, ratio: "9:16"),
+        CanvasPreset(id: "pin-video", name: "Pinterest Video", platform: "pinterest", width: 1080, height: 1920, ratio: "9:16"),
+        CanvasPreset(id: "fb-reel", name: "Facebook Reels", platform: "facebook", width: 1080, height: 1920, ratio: "9:16"),
+        CanvasPreset(id: "ig-feed-video", name: "Instagram Feed Video", platform: "instagram", width: 1080, height: 1350, ratio: "4:5"),  // grid: ok platform pixel size
+        CanvasPreset(id: "square-video", name: "Square Video (X, LinkedIn, Facebook)", platform: "x", width: 1080, height: 1080, ratio: "1:1"),
+        CanvasPreset(id: "youtube", name: "YouTube", platform: "youtube", width: 1920, height: 1080, ratio: "16:9"),
     ]
 }

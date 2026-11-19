@@ -568,7 +568,9 @@ struct BulkPipelinePanel: View {
                     PlatformBadge(platform: p, size: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(PlatformRegistry.spec(p)?.name ?? p).font(DS.bodyMedium).foregroundStyle(DS.text2)
-                        Text("Publishing comes in milestone 4").font(DS.small).foregroundStyle(DS.text3)
+                        Text(PlatformRegistry.spec(p)?.isAvailable == true ? "Bulk makes Pins; post to \(PlatformRegistry.spec(p)?.name ?? p) from Composer"
+                                                                           : "Drafts only: posting isn't built yet")
+                            .font(DS.small).foregroundStyle(DS.text3)
                     }
                     Spacer()
                     Toggle("", isOn: .constant(false)).toggleStyle(SFToggleStyle()).labelsHidden().fixedSize().disabled(true).opacity(0.4)

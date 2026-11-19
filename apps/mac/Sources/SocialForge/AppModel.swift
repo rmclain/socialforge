@@ -53,6 +53,9 @@ final class AppModel {
     var variantProgress: (done: Int, total: Int)?
     var busyMessage: String?
     var lastError: String?
+    /// A Meta or Threads sign-in waiting for the address the browser landed on.
+    var pendingOAuth: PendingOAuth?
+    var metaMessage: String?
 
     // Publishing service.
     var backendURLString: String {
@@ -184,6 +187,9 @@ final class AppModel {
             if let info = item.info {
                 a.width = info.width; a.height = info.height; a.format = info.format; a.hasAlpha = info.hasAlpha
             }
+            if let av = item.av {
+                a.width = av.width; a.height = av.height; a.format = av.format; a.duration = av.duration
+            }
             context.insert(a)
             created.append(a)
         }
@@ -197,7 +203,7 @@ final class AppModel {
         var reasons = (scan.skipped + outcome.failed).prefix(5).map { "\($0.url.lastPathComponent): \($0.reason)" }
         if failed > 5 { reasons.append("…and \(failed - 5) more") }
         if !reasons.isEmpty { lastImportSummary! += "\n" + reasons.joined(separator: "\n") }
-        if !created.isEmpty { log("Imported \(created.count) images", symbol: "photo.on.rectangle") }
+        if !created.isEmpty { log("Imported \(created.count) \(created.count == 1 ? "file" : "files")", symbol: "photo.on.rectangle") }
         mediaSelection = Set(created.map(\.uuid))
         if let csv = csvs.first { bulk.loadCSV(csv) }
         return created

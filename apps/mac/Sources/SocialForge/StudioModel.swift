@@ -1,4 +1,5 @@
 import AppKit
+import AVFoundation
 import Foundation
 import Observation
 import SwiftData
@@ -31,6 +32,18 @@ final class StudioModel {
     private(set) var savedRevision = 0
     /// The document before a canvas drag began (one undo step per drag).
     var dragOrigin: CreativeDocument?
+
+    // Video designs
+    /// The playhead, in seconds.
+    var time: Double = 0
+    var isPlaying = false
+    /// The selected audio track (Layers and the inspector show it).
+    var selectedAudio: UUID?
+    /// Export progress, 0...1, while a video renders.
+    var videoProgress: Double?
+    @ObservationIgnored var playback: Task<Void, Never>?
+    @ObservationIgnored var audioPlayer: AVPlayer?
+    @ObservationIgnored var exportTask: Task<Void, Never>?
 
     /// Re-render without an undo step (template values changed).
     func touch() { revision += 1 }

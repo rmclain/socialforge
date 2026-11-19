@@ -1,3 +1,4 @@
+import AVKit
 import SwiftData
 import SwiftUI
 import UniformTypeIdentifiers
@@ -15,7 +16,7 @@ struct MediaLibraryView: View {
     @State private var newCollection = ""
     @State private var showCollectionPrompt = false
 
-    enum Filter: String, CaseIterable { case all = "All", favorites = "Favorites", images = "Images", videos = "Videos", variants = "Branded" }
+    enum Filter: String, CaseIterable { case all = "All", favorites = "Favorites", images = "Images", videos = "Videos", audio = "Audio", variants = "Branded" }
     enum Sort: String, CaseIterable { case filename = "Filename", newest = "Newest", size = "Size" }
 
     private var mine: [MediaAsset] { allAssets.filter { $0.workspaceID == model.workspaceID } }
@@ -30,6 +31,7 @@ struct MediaLibraryView: View {
                 case .favorites: a.isFavorite
                 case .images: a.kind == "image"
                 case .videos: a.kind == "video"
+                case .audio: a.kind == "audio"
                 case .variants: a.tags.contains("branded")
                 }
             }() && (q.isEmpty || a.filename.localizedCaseInsensitiveContains(q) || a.title.localizedCaseInsensitiveContains(q)
@@ -249,8 +251,12 @@ struct MediaTile: View {
                 .overlay(alignment: .topLeading) {
                     if asset.isFavorite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow).padding(Space.sm) }
                 }
-                .overlay(alignment: .bottomLeading) {
-                    if asset.kind == "video" { Image(systemName: "play.fill").font(.caption).foregroundStyle(.white).padding(Space.sm) }
+                .overlay(alignment: .bottomTrailing) {
+                    if asset.duration > 0 {
+                        Text(Duration.seconds(asset.duration).formatted(.time(pattern: .minuteSecond))).font(.system(size: 11, weight: .semibold).monospacedDigit())
+                            .foregroundStyle(.white).padding(.horizontal, Space.sm).padding(.vertical, 2)
+                            .background(.black.opacity(0.55), in: Capsule()).padding(Space.sm)
+                    }
                 }
             Text(asset.filename).font(DS.mono).foregroundStyle(DS.text2).lineLimit(1).truncationMode(.middle)
         }
@@ -355,11 +361,21 @@ struct AssetDetails: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
-            Thumbnail(path: asset.storedPath, maxPixel: 600, contentMode: .fit).frame(height: 200)
-                .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            Group {
+                if asset.kind == "image" {
+                    Thumbnail(path: asset.storedPath, maxPixel: 600, contentMode: .fit)
+                } else {
+                    // Plays video and audio in place.
+                    VideoPlayer(player: AVPlayer(url: asset.storedURL))
+                }
+            }
+            .frame(height: asset.kind == "audio" ? 64 : 200)
+            .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+            .id(asset.uuid)
             VStack(spacing: 0) {
                 KeyValueRow("File", asset.filename)
-                KeyValueRow("Size", "\(asset.dimensions) · \(asset.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(asset.bytes), countStyle: .file))")
+                KeyValueRow("Size", "\(asset.kind == "audio" ? "Audio" : asset.dimensions) · \(asset.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(asset.bytes), countStyle: .file))")
+                if asset.duration > 0 { KeyValueRow("Length", Duration.seconds(asset.duration).formatted(.time(pattern: .minuteSecond(padMinuteToLength: 1, fractionalSecondsLength: 1)))) }
                 if asset.hasAlpha { KeyValueRow("Transparency", "Yes") }
                 KeyValueRow(key: "SHA-256") { Text(asset.sha256.prefix(16) + "…").font(DS.mono).textSelection(.enabled) }
             }

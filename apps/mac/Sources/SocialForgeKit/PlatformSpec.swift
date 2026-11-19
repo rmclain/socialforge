@@ -24,6 +24,19 @@ public struct PlatformSpec: Sendable, Codable, Identifiable {
         public let recommendedMinWidth: Int
         public let note: String?
     }
+    /// Video rules. Optional fields are absent when the platform publishes no limit.
+    public struct VideoRule: Sendable, Codable {
+        public let formats: [String]
+        public let codecs: [String]
+        public let audio: [String]
+        public let maxBytes: Int?
+        public let minSeconds: Double?
+        public let maxSeconds: Double?
+        public let recommended: Size
+        public let maxFps: Double?
+        public let minFps: Double?
+        public let note: String?
+    }
 
     public let platform: String
     public let name: String
@@ -35,7 +48,10 @@ public struct PlatformSpec: Sendable, Codable, Identifiable {
     public let sources: [Source]
     public let contentTypes: [ContentType]
     public let text: [String: TextRule]
-    public let image: ImageRule
+    /// Nil when the platform takes no image posts (YouTube Shorts).
+    public let image: ImageRule?
+    /// Nil when the platform takes no video posts through its API.
+    public let video: VideoRule?
 
     public var id: String { platform }
     public var isAvailable: Bool { status == "available" }
@@ -138,18 +154,22 @@ public enum PostValidator {
             }
         }
         if let img = post.image {
-            if !spec.image.formats.contains(img.format) {
-                issues.append(ValidationIssue(.error, "image", "\(img.format.uppercased()) is not accepted by \(spec.name). Make a variant in \(spec.image.formats.map { $0.uppercased() }.joined(separator: ", "))."))
+            guard let rule = spec.image else {
+                issues.append(ValidationIssue(.error, "image", "\(spec.name) does not take image posts."))
+                return issues
             }
-            if img.bytes > spec.image.maxBytes {
-                let mb = Double(spec.image.maxBytes) / 1_048_576
-                issues.append(ValidationIssue(spec.image.maxBytesEnforced ? .error : .warning, "image",
+            if !rule.formats.contains(img.format) {
+                issues.append(ValidationIssue(.error, "image", "\(img.format.uppercased()) is not accepted by \(spec.name). Make a variant in \(rule.formats.map { $0.uppercased() }.joined(separator: ", "))."))
+            }
+            if img.bytes > rule.maxBytes {
+                let mb = Double(rule.maxBytes) / 1_048_576
+                issues.append(ValidationIssue(rule.maxBytesEnforced ? .error : .warning, "image",
                                               String(format: "The image is %.1f MB; the limit is %.0f MB.", Double(img.bytes) / 1_048_576, mb)))
             }
-            if img.width < spec.image.recommendedMinWidth {
-                issues.append(ValidationIssue(.warning, "image", "The image is \(img.width) px wide; \(spec.image.recommendedMinWidth) px or more is recommended."))
+            if img.width < rule.recommendedMinWidth {
+                issues.append(ValidationIssue(.warning, "image", "The image is \(img.width) px wide; \(rule.recommendedMinWidth) px or more is recommended."))
             }
-            let rec = spec.image.recommended
+            let rec = rule.recommended
             let want = Double(rec.width) / Double(rec.height)
             let have = Double(img.width) / Double(max(1, img.height))
             if abs(want - have) / want > 0.03 {
@@ -158,6 +178,51 @@ public enum PostValidator {
         }
         return issues
     }
+
+    /// Checks a video against a platform's rules. Errors are limits the platform enforces;
+    /// a size that differs from the recommended one is only information.
+    public static func validateVideo(platform: String, seconds: Double, width: Int, height: Int, bytes: Int, format: String,
+                                     fps: Double? = nil) -> [ValidationIssue] {
+        guard let spec = PlatformRegistry.spec(platform) else {
+            return [ValidationIssue(.error, "platform", "Unknown platform “\(platform)”.")]
+        }
+        guard let rule = spec.video else { return [ValidationIssue(.error, "video", "\(spec.name) does not take video posts.")] }
+        var issues: [ValidationIssue] = []
+        let fmt = format.lowercased()
+        if !rule.formats.contains(fmt) {
+            issues.append(ValidationIssue(.error, "video", "\(fmt.uppercased()) is not accepted by \(spec.name). Export \(rule.formats.map { $0.uppercased() }.joined(separator: " or "))."))
+        }
+        if let min = rule.minSeconds, seconds < min {
+            issues.append(ValidationIssue(.error, "video", String(format: "The video is %.1f s; %@ needs at least %@ s.", seconds, spec.name, Self.number(min))))
+        }
+        if let max = rule.maxSeconds, seconds > max {
+            issues.append(ValidationIssue(.error, "video", String(format: "The video is %.1f s; %@ allows up to %@.", seconds, spec.name, Self.duration(max))))
+        }
+        if let max = rule.maxBytes, bytes > max {
+            issues.append(ValidationIssue(.error, "video", String(format: "The video is %.0f MB; the limit is %.0f MB.", Double(bytes) / 1_048_576, Double(max) / 1_048_576)))
+        }
+        if let fps {
+            if let max = rule.maxFps, fps > max + 0.01 { issues.append(ValidationIssue(.error, "video", "\(Self.number(fps)) fps is above \(spec.name)'s \(Self.number(max)) fps.")) }
+            if let min = rule.minFps, fps < min - 0.01 { issues.append(ValidationIssue(.error, "video", "\(Self.number(fps)) fps is below \(spec.name)'s \(Self.number(min)) fps.")) }
+        }
+        let rec = rule.recommended
+        let want = Double(rec.width) / Double(rec.height)
+        let have = Double(width) / Double(max(1, height))
+        if abs(want - have) / want > 0.03 {
+            issues.append(ValidationIssue(.info, "video", "Recommended: \(rec.aspect) (\(rec.width) × \(rec.height)). This video is \(width) × \(height)."))
+        }
+        return issues
+    }
+
+    /// "90 s", "3 min", "1 h 30 min".
+    public static func duration(_ seconds: Double) -> String {
+        let s = Int(seconds.rounded())
+        if s < 60 { return "\(s) s" }
+        if s < 3600 { return s % 60 == 0 ? "\(s / 60) min" : "\(s / 60) min \(s % 60) s" }
+        return s % 3600 == 0 ? "\(s / 3600) h" : "\(s / 3600) h \((s % 3600) / 60) min"
+    }
+
+    static func number(_ x: Double) -> String { x == x.rounded() ? String(Int(x)) : String(format: "%.1f", x) }
 
     /// Warnings across a whole run: the same image or link used twice.
     public static func duplicates(_ posts: [(id: String, imageHash: String?, link: String)]) -> [String: [ValidationIssue]] {
@@ -192,7 +257,7 @@ public enum Capabilities {
         return spec.contentTypes.map { ct in
             let missing = ct.requiredScopes.filter { !grantedScopes.contains($0) }
             if !spec.isAvailable {
-                return AccountCapability(contentType: ct, allowed: false, reason: "\(spec.name) publishing comes in milestone 4.", missingScopes: missing)
+                return AccountCapability(contentType: ct, allowed: false, reason: PlatformStatus.notBuiltReason(spec), missingScopes: missing)
             }
             if status != "connected" {
                 return AccountCapability(contentType: ct, allowed: false, reason: "The account is \(status). Reconnect it to publish.", missingScopes: missing)
@@ -203,5 +268,29 @@ public enum Capabilities {
             }
             return AccountCapability(contentType: ct, allowed: true, reason: nil, missingScopes: [])
         }
+    }
+}
+
+// MARK: - What SocialForge does for each platform today
+
+public enum PlatformStatus {
+    /// One honest line per platform, for Settings and Accounts.
+    public static func summary(_ spec: PlatformSpec) -> String {
+        switch spec.platform {
+        case "pinterest": "Posts from this Mac. Connect your Pinterest app below."
+        case "facebook": "Posts from this Mac (not yet verified live): text, photos, and Reels to your Pages. Connect your Meta app below."
+        case "instagram": "Posts from this Mac (not yet verified live): Reels upload from this Mac; photos need public media storage. Connect your Meta app below."
+        case "threads": "Posts from this Mac (not yet verified live): text posts; photos and videos need public media storage. Connect your Threads app below."
+        case "linkedin", "x": "Drafts only: SocialForge writes and sizes the post; posting is not built yet."
+        default: spec.video != nil
+            ? "Export only: SocialForge makes the video at the right size; you upload it."
+            : "Export only: SocialForge makes the post at the right size; you upload it."
+        }
+    }
+
+    public static func notBuiltReason(_ spec: PlatformSpec) -> String {
+        spec.video != nil
+            ? "Posting to \(spec.name) isn't built yet. Export the video from Studio and upload it in \(spec.name)."
+            : "Posting to \(spec.name) isn't built yet. Export the image from Studio and upload it in \(spec.name)."
     }
 }

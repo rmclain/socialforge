@@ -162,8 +162,8 @@ enum ImportPanel {
         let panel = NSOpenPanel()
         panel.canChooseDirectories = true
         panel.allowsMultipleSelection = true
-        panel.allowedContentTypes = MediaFormats.images + MediaFormats.videos + [.commaSeparatedText, .folder]
-        panel.message = "Choose images, folders, or a CSV. Files are copied into SocialForge; the originals are not changed."
+        panel.allowedContentTypes = MediaFormats.images + MediaFormats.videos + MediaFormats.audio + [.commaSeparatedText, .folder]
+        panel.message = "Choose images, videos, music, folders, or a CSV. Files are copied into SocialForge; the originals are not changed."
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         Task { _ = await model.importMedia(urls) }
