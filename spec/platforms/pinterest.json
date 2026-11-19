@@ -1,0 +1,29 @@
+{
+  "platform": "pinterest",
+  "name": "Pinterest",
+  "specVersion": "2026-11-19",
+  "status": "available",
+  "liveVerified": false,
+  "sources": [
+    {"title": "Pinterest API v5: Create Pin", "url": "https://developers.pinterest.com/docs/api/v5/pins-create/", "checked": "2026-11-19"},
+    {"title": "Pinterest OAuth", "url": "https://developers.pinterest.com/docs/getting-started/authentication-and-scopes/", "checked": "2026-11-19"},
+    {"title": "Pin specs", "url": "https://help.pinterest.com/en/business/article/pinterest-product-specs", "checked": "2026-11-19"}
+  ],
+  "contentTypes": [
+    {"id": "image_pin", "name": "Image Pin", "requiredScopes": ["boards:read", "pins:write"], "needsDestination": "board"}
+  ],
+  "text": {
+    "title": {"max": 100, "required": false, "enforced": true},
+    "description": {"max": 800, "required": false, "enforced": true},
+    "alt_text": {"max": 500, "required": false, "enforced": true},
+    "link": {"max": 2048, "required": false, "enforced": true}
+  },
+  "image": {
+    "formats": ["jpeg", "png", "webp", "bmp", "tiff"],
+    "maxBytes": 20971520,
+    "maxBytesEnforced": true,
+    "recommended": {"width": 1000, "height": 1500, "aspect": "2:3"},
+    "recommendedMinWidth": 600,
+    "note": "Other ratios are accepted; tall images may be cropped in the feed."
+  }
+}

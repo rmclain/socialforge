@@ -1,0 +1,24 @@
+{
+  "platform": "linkedin",
+  "name": "LinkedIn",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {"title": "LinkedIn Posts API", "url": "https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/posts-api", "checked": "2026-11-19"}
+  ],
+  "contentTypes": [
+    {"id": "member_post", "name": "Profile post", "requiredScopes": ["w_member_social"], "needsDestination": "none"},
+    {"id": "organization_post", "name": "Company page post", "requiredScopes": ["w_organization_social"], "needsDestination": "organization"}
+  ],
+  "text": {
+    "commentary": {"max": 3000, "required": true, "enforced": true}
+  },
+  "image": {
+    "formats": ["jpeg", "png", "gif"],
+    "maxBytes": 36152320,
+    "maxBytesEnforced": false,
+    "recommended": {"width": 1200, "height": 627, "aspect": "1.91:1"},
+    "recommendedMinWidth": 552
+  }
+}

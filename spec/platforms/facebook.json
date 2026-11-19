@@ -1,0 +1,23 @@
+{
+  "platform": "facebook",
+  "name": "Facebook Page",
+  "specVersion": "2026-11-19",
+  "status": "planned",
+  "liveVerified": false,
+  "sources": [
+    {"title": "Pages API: Posts", "url": "https://developers.facebook.com/docs/pages-api/posts", "checked": "2026-11-19"}
+  ],
+  "contentTypes": [
+    {"id": "page_photo", "name": "Photo post", "requiredScopes": ["pages_manage_posts", "pages_read_engagement"], "needsDestination": "page"}
+  ],
+  "text": {
+    "message": {"max": 63206, "required": false, "enforced": true}
+  },
+  "image": {
+    "formats": ["jpeg", "png", "gif", "bmp", "tiff"],
+    "maxBytes": 10485760,
+    "maxBytesEnforced": false,
+    "recommended": {"width": 1080, "height": 1350, "aspect": "4:5"},
+    "recommendedMinWidth": 600
+  }
+}
