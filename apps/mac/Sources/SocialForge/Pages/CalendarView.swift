@@ -148,6 +148,9 @@ struct CalendarView: View {
                 .padding(Space.sm)
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                 .background(DS.fill, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+                .contentShape(Rectangle())
+                .onTapGesture(count: 2) { CalendarCompose.open(on: d, model: model) }
+                .help("Double-click to schedule a post on this day")
                 .dropDestination(for: String.self) { ids, _ in CalendarDrop.move(ids, to: d, model: model) }
             }
         }
@@ -172,6 +175,9 @@ struct CalendarView: View {
                 }
             }
         }
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { CalendarCompose.open(on: anchor, model: model) }
+        .help("Double-click to schedule a post on this day")
         .dropDestination(for: String.self) { ids, _ in CalendarDrop.move(ids, to: anchor, model: model) }
     }
 
@@ -192,6 +198,19 @@ struct CalendarView: View {
                 }
             }
         }
+    }
+}
+
+/// Double-click a day: a new post in the Composer, set for that day.
+enum CalendarCompose {
+    /// Returns false (and beeps) for a day that has no time left to schedule.
+    @MainActor
+    @discardableResult
+    static func open(on day: Date, model: AppModel) -> Bool {
+        guard let time = CalendarSlot.defaultTime(on: day) else { NSSound.beep(); return false }
+        model.composer.startNew(model: model, at: time)
+        model.page = .composer
+        return true
     }
 }
 
@@ -237,6 +256,9 @@ struct DayTile: View {
         .background(inMonth ? DS.fill : .clear, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: 12, style: .continuous)
             .strokeBorder(targeted || selected ? DS.accentFill : DS.stroke, lineWidth: targeted || selected ? 2 : 1))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { CalendarCompose.open(on: day, model: model) }
+        .help("Double-click to schedule a post on this day")
         .dropDestination(for: String.self) { ids, _ in CalendarDrop.move(ids, to: day, model: model) } isTargeted: { targeted = $0 }
         .contextMenu { if !posts.isEmpty { PublicationMenu(ids: Set(posts.map(\.id))) } }
     }
@@ -361,7 +383,7 @@ struct PublicationInspector: View {
             VStack(spacing: 0) {
                 PanelHeader(title: "Post")
                 Divider().overlay(DS.stroke)
-                EmptyState(symbol: "calendar", title: "No post selected", message: "Click a post to preview it and edit its copy, link, and time. Command-click to edit several at once.")
+                EmptyState(symbol: "calendar", title: "No post selected", message: "Click a post to preview it and edit its copy, link, and time. Command-click to edit several at once. Double-click a day to schedule a new post.")
             }
         }
     }

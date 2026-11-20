@@ -31,6 +31,7 @@ struct SettingsPane: View {
             case .ai: AISettings()
             case .comfy: ComfyUISettings()
             case .appearance: AppearanceSettingsPane()
+            case .agents: AgentSettings()
             }
         }
         .frame(maxWidth: 640, alignment: .leading)
@@ -77,7 +78,7 @@ struct SettingsInspector: View {
 }
 
 enum SettingsTab: String, CaseIterable, Identifiable {
-    case general, publishing, ai, comfy, appearance
+    case general, publishing, ai, comfy, agents, appearance
 
     var id: String { rawValue }
 
@@ -87,6 +88,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .publishing: "Publishing"
         case .ai: "AI Providers"
         case .comfy: "ComfyUI"
+        case .agents: "Agents"
         case .appearance: "Appearance"
         }
     }
@@ -97,6 +99,7 @@ enum SettingsTab: String, CaseIterable, Identifiable {
         case .publishing: "paperplane"
         case .ai: "sparkles"
         case .comfy: "cpu"
+        case .agents: "point.3.connected.trianglepath.dotted"
         case .appearance: "paintpalette"
         }
     }
@@ -130,7 +133,7 @@ struct GeneralSettings: View {
             Button("New Workspace…") { model.showNewWorkspace = true }.buttonStyle(SecondaryButtonStyle())
         }
         UpdateSettingsView()
-        SettingsGroup(title: "Library", footer: "Imported files are copied here, one folder per content hash. Your originals are never changed.") {
+        SettingsGroup(title: "Library", footer: "Imported files are copied here, one folder per content hash. Your originals are never changed. Each brand can save to its own folder: Brand Kits > Save files to.") {
             Text(model.storage.root.path).font(DS.mono).foregroundStyle(DS.text2).textSelection(.enabled).lineLimit(2)
             Button("Show in Finder") {
                 try? FileManager.default.createDirectory(at: model.storage.root, withIntermediateDirectories: true)
@@ -328,7 +331,7 @@ struct ComfyUISettings: View {
 
 struct AppearanceSettingsPane: View {
     var body: some View {
-        SettingsGroup(title: "Appearance", footer: "SocialForge follows your Mac's light or dark mode. The accent is SocialForge's ember orange from the design.") {
+        SettingsGroup(title: "Appearance", footer: "System follows your Mac's light or dark mode; Light or Dark keeps SocialForge that way. The accent is SocialForge's ember orange from the design.") {
             AppearanceSettings()
         }
     }
@@ -377,5 +380,63 @@ struct PlatformsSettingsGroup: View {
         if let max = v.maxSeconds { parts.append("up to \(PostValidator.duration(max))") }
         parts.append(v.formats.map { $0.uppercased() }.joined(separator: "/"))
         return parts.joined(separator: " · ")
+    }
+}
+
+/// How to let Claude Code, Codex, and other agents work in SocialForge (`SocialForge --mcp`), and what they asked for lately.
+struct AgentSettings: View {
+    @Environment(AppModel.self) private var model
+
+    private var executable: String { Bundle.main.executablePath ?? "/Applications/SocialForge.app/Contents/MacOS/SocialForge" }
+
+    var body: some View {
+        SettingsGroup(title: "Connect an agent",
+                      footer: "Run one command in Terminal, then start a new session. Agents can look at your brands, accounts, media, and posts, add media, and make posts. Everything they make waits in Needs Review until you approve it; they cannot approve or publish.") {
+            command("Claude Code", "claude mcp add --scope user socialforge -- \"\(executable)\" --mcp")
+            Divider().overlay(DS.stroke)
+            command("Codex", "codex mcp add socialforge -- \"\(executable)\" --mcp")
+            Divider().overlay(DS.stroke)
+            command("Other MCP clients (stdio)", "\"\(executable)\" --mcp")
+        }
+        TimelineView(.periodic(from: .now, by: 3)) { _ in
+            let inbox = model.agentInbox
+            let recent = inbox.recent(limit: 6)
+            let waiting = inbox.pendingCount
+            SettingsGroup(title: "Recent requests", footer: "Requests wait in \(inbox.root.path) until SocialForge applies them, within a few seconds while it is open.") {
+                if waiting > 0 {
+                    StatusDot(text: "\(waiting) waiting", color: DS.amber)
+                }
+                if recent.isEmpty && waiting == 0 {
+                    Text("No agent has asked for anything yet.").font(DS.body).foregroundStyle(DS.text2)
+                }
+                ForEach(recent, id: \.id) { r in
+                    HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                        Image(systemName: r.ok ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                            .foregroundStyle(r.ok ? DS.green : DS.amber)
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("\(r.client) · \(r.message)").font(DS.body).foregroundStyle(DS.text).fixedSize(horizontal: false, vertical: true)
+                            Text(r.finishedAt.formatted(date: .abbreviated, time: .shortened)).font(DS.small).foregroundStyle(DS.text2)
+                        }
+                    }
+                    .accessibilityElement(children: .combine)
+                }
+            }
+        }
+    }
+
+    private func command(_ title: String, _ text: String) -> some View {
+        VStack(alignment: .leading, spacing: Space.sm) {
+            HStack {
+                Text(title).font(DS.bodyMedium).foregroundStyle(DS.text)
+                Spacer()
+                Button("Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(text, forType: .string)
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .help("Copy the command for Terminal")
+            }
+            Text(text).font(DS.mono).foregroundStyle(DS.text2).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+        }
     }
 }

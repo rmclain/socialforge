@@ -52,7 +52,11 @@ Then:
    `http://127.0.0.1:8085/pinterest/callback`) and press Connect Pinterest. For
    Facebook, Instagram, and Threads, follow [docs/META_SETUP.md](docs/META_SETUP.md).
 2. **Bulk Publisher**: drop a folder of images and a CSV, choose the account and a
-   board, set the cadence, Create Posts, review, Approve, Activate.
+   board, set the cadence, Create Posts, review, Approve, Activate. The CSV has one
+   row per image: `filename` (matched to the image's file name, any extension) and
+   `url` (where the post links), plus optional `title`, `description`, and `alt_text`.
+   Start from [docs/samples/media-links.csv](docs/samples/media-links.csv), or
+   **File > Save Sample CSV…** in the app.
 3. To publish while the app is closed, turn on **Settings > Publishing > Publish
    while SocialForge is closed** and approve it in System Settings > General >
    Login Items.
@@ -88,6 +92,20 @@ Download the latest zip from [Releases](https://github.com/rmclain/socialforge/r
 SocialForge to Applications. Installed copies check GitHub releases once a day and offer an **Update**
 button; the new version is verified against the same Developer ID team before it replaces the app.
 See [docs/RELEASE.md](docs/RELEASE.md).
+
+## Use it from Claude Code, Codex, or another agent (MCP)
+
+`SocialForge --mcp` is an MCP server on stdio. Add it once (the exact commands, with your path, are in Settings > Agents, or Assistant > Connect Claude or Codex…):
+
+```sh
+claude mcp add --scope user socialforge -- ~/Applications/SocialForge.app/Contents/MacOS/SocialForge --mcp
+codex mcp add socialforge -- ~/Applications/SocialForge.app/Contents/MacOS/SocialForge --mcp
+```
+
+Tools: `list_brands`, `list_accounts`, `list_media`, `list_posts`, `get_request_status` read the library;
+`import_media`, `create_posts`, `update_media` are queued in `~/Library/Application Support/SocialForge/Agent Inbox`
+and applied by the app while it is open (or at its next launch). Posts an agent makes always wait in Needs Review;
+agents cannot approve or publish.
 
 ## Optional: the publishing service
 

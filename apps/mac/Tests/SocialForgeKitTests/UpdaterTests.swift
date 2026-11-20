@@ -73,4 +73,32 @@ struct UpdaterTests {
         #expect(found.lastPathComponent == "SocialForge.app")
         await #expect(throws: UpdateInstaller.Failure.self) { try await UpdateInstaller().verify(found, sameTeamAs: found) }
     }
+
+    /// The new copy opens only after the old one has exited, so two never run at once.
+    @Test func relaunchWaitsForTheOldCopyToExit() async throws {
+        let marker = FileManager.default.temporaryDirectory.appending(path: "relaunch-\(UUID().uuidString)")
+        let old = Process()
+        old.executableURL = URL(filePath: "/bin/sleep")
+        old.arguments = ["1"]
+        try old.run()
+        let (tool, args) = UpdateInstaller.relaunchCommand(waitingFor: old.processIdentifier, then: marker, opener: "/usr/bin/touch")
+        let waiter = Process()
+        waiter.executableURL = URL(filePath: tool)
+        waiter.arguments = args
+        try waiter.run()
+        try await Task.sleep(for: .milliseconds(400))
+        #expect(!FileManager.default.fileExists(atPath: marker.path), "opened while the old copy still ran")
+        old.waitUntilExit()
+        waiter.waitUntilExit()
+        #expect(FileManager.default.fileExists(atPath: marker.path))
+        try? FileManager.default.removeItem(at: marker)
+    }
+
+    @Test func relaunchPassesPathsAsArguments() {
+        let app = URL(filePath: "/Applications/Odd \"name\"; rm -rf ~.app")
+        let (tool, args) = UpdateInstaller.relaunchCommand(waitingFor: 42, then: app)
+        #expect(tool == "/bin/sh")
+        #expect(args.last == app.path)
+        #expect(!args[1].contains(app.path))
+    }
 }

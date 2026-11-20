@@ -67,6 +67,31 @@ final class ThemeStore {
         didSet { UserDefaults.standard.set(themeID, forKey: "appearance.accent") }
     }
 
+    /// Light, Dark, or System (follow the Mac). Settings > Appearance.
+    enum Mode: String, CaseIterable, Identifiable {
+        case system, light, dark
+        var id: String { rawValue }
+        var title: String { switch self { case .system: "System"; case .light: "Light"; case .dark: "Dark" } }
+        var appearance: NSAppearance? {
+            switch self { case .system: nil; case .light: NSAppearance(named: .aqua); case .dark: NSAppearance(named: .darkAqua) }
+        }
+    }
+
+    static let modeKey = "appearance.mode"
+
+    var mode: Mode = Mode(rawValue: UserDefaults.standard.string(forKey: ThemeStore.modeKey) ?? "") ?? .system {
+        didSet {
+            UserDefaults.standard.set(mode.rawValue, forKey: Self.modeKey)
+            applyMode()
+        }
+    }
+
+    /// Sets the whole app's look; snapshots set their own and skip this.
+    func applyMode() {
+        guard ProcessInfo.processInfo.environment["APP_SNAPSHOT"] == nil else { return }
+        NSApp?.appearance = mode.appearance
+    }
+
     /// True while the Mac's accent is Multicolor.
     private(set) var macIsMulticolor = ThemeStore.readMulticolor()
 

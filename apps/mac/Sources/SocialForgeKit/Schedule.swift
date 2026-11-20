@@ -141,3 +141,21 @@ public enum ScheduleBuilder {
         return out
     }
 }
+
+/// The time a post starts with when someone picks a day on the calendar.
+public enum CalendarSlot {
+    /// 9:00 on `day`, or the next full hour when 9:00 has already passed today.
+    /// `nil` for a day before today: posts are not scheduled in the past.
+    public static func defaultTime(on day: Date, now: Date = .now, calendar: Calendar = .current,
+                                   preferred: LocalTime = LocalTime(9)) -> Date? {
+        let start = calendar.startOfDay(for: day)
+        guard start >= calendar.startOfDay(for: now) else { return nil }
+        if let nine = calendar.date(bySettingHour: preferred.hour, minute: preferred.minute, second: 0, of: start), nine > now {
+            return nine
+        }
+        // Today, after 9:00: the next full hour, if it is still today.
+        guard let hour = calendar.dateInterval(of: .hour, for: now)?.end,
+              calendar.isDate(hour, inSameDayAs: now) else { return nil }
+        return hour
+    }
+}

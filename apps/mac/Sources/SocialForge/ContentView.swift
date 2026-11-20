@@ -40,6 +40,7 @@ struct ContentView: View {
         .animation(.snappy(duration: 0.2), value: model.showInspector)
         .animation(.snappy(duration: 0.2), value: model.showSidebar)
         .sheet(isPresented: $model.showNewWorkspace) { NewWorkspaceSheet() }
+        .sheet(isPresented: $model.showWelcome) { WelcomeSheet() }
         .sheet(isPresented: $model.showCommandPanel) { CommandPanel() }
         .sheet(isPresented: Binding(get: { AppUpdater.shared.showSheet }, set: { AppUpdater.shared.showSheet = $0 })) {
             if let r = AppUpdater.shared.available { UpdateSheet(release: r) }
@@ -56,6 +57,13 @@ struct ContentView: View {
             guard !Store.isOverridden else { return }
             model.runner.startInApp()
             AppUpdater.shared.checkIfDue()
+            Task { @MainActor in
+                // What Claude, Codex, and other agents queued through `SocialForge --mcp`.
+                while !Task.isCancelled {
+                    await model.processAgentInbox()
+                    try? await Task.sleep(for: .seconds(3))
+                }
+            }
             Task { @MainActor in
                 // Folder and weekly automations, while the app is open.
                 while !Task.isCancelled {

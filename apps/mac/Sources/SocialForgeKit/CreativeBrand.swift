@@ -75,31 +75,62 @@ extension CreativeDocument {
     /// Smart resize to another canvas: positions scale per axis, sizes scale
     /// uniformly (so text and logos never stretch), and full-bleed layers stay
     /// full-bleed. Text stays live; the result is a new editable document.
+    ///
+    /// Layers that touch an edge stay on that edge (a top shade stays at the top),
+    /// and a group (a button and its label) moves and scales as one piece, so its
+    /// parts keep their places relative to each other.
     public func resized(width newW: Int, height newH: Int, name: String? = nil) -> CreativeDocument {
-        let sx = Double(newW) / Double(width), sy = Double(newH) / Double(height)
+        let oldW = Double(width), oldH = Double(height)
+        let newWidth = Double(newW), newHeight = Double(newH)
+        let sx = newWidth / oldW, sy = newHeight / oldH
         let s = min(sx, sy)
         var copy = self
         copy.width = newW
         copy.height = newH
         if let name { copy.name = name }
+
+        /// Where a box of the old canvas goes: edges stay on edges, otherwise the center keeps its relative place.
+        func place(start: Double, length: Double, newLength: Double, old: Double, new: Double, scale: Double) -> Double {
+            if start <= 1 { return 0 }
+            if start + length >= old - 1 { return (new - newLength).rounded() }
+            return ((start + length / 2) * scale - newLength / 2).rounded()
+        }
+
+        // Each group's bounding box in the old canvas.
+        var boxes: [String: (x: Double, y: Double, maxX: Double, maxY: Double)] = [:]
+        for l in layers {
+            guard let g = l.group else { continue }
+            let b = boxes[g] ?? (l.x, l.y, l.x + l.width, l.y + l.height)
+            boxes[g] = (min(b.x, l.x), min(b.y, l.y), max(b.maxX, l.x + l.width), max(b.maxY, l.y + l.height))
+        }
+
         copy.layers = layers.map { layer in
             var l = layer
-            let fullBleedX = layer.x <= 1 && layer.width >= Double(width) - 1
-            let fullBleedY = layer.y <= 1 && layer.height >= Double(height) - 1
+            let fullBleedX = layer.x <= 1 && layer.width >= oldW - 1
+            let fullBleedY = layer.y <= 1 && layer.height >= oldH - 1
             if fullBleedX && fullBleedY {
-                l.x = 0; l.y = 0; l.width = Double(newW); l.height = Double(newH)
+                l.x = 0; l.y = 0; l.width = newWidth; l.height = newHeight
                 return l
             }
-            // Keep each layer's center in the same relative place, size scaled uniformly.
-            let cx = (layer.x + layer.width / 2) * sx, cy = (layer.y + layer.height / 2) * sy
-            l.width = fullBleedX ? Double(newW) : layer.width * s
-            l.height = fullBleedY ? Double(newH) : layer.height * s
-            // Wide text boxes keep their share of the canvas width so lines do not wrap more.
-            if case .text = layer.content, !fullBleedX {
-                l.width = min(Double(newW) - 2 * max(0, layer.x * sx), layer.width * sx)
+            if let g = layer.group, let box = boxes[g] {
+                // The group is placed like one layer; members keep their offsets, scaled uniformly.
+                let bw = box.maxX - box.x, bh = box.maxY - box.y
+                let gx = place(start: box.x, length: bw, newLength: bw * s, old: oldW, new: newWidth, scale: sx)
+                let gy = place(start: box.y, length: bh, newLength: bh * s, old: oldH, new: newHeight, scale: sy)
+                l.x = (gx + (layer.x - box.x) * s).rounded()
+                l.y = (gy + (layer.y - box.y) * s).rounded()
+                l.width = layer.width * s
+                l.height = layer.height * s
+            } else {
+                l.width = fullBleedX ? newWidth : layer.width * s
+                l.height = fullBleedY ? newHeight : layer.height * s
+                // Wide text boxes keep their share of the canvas width so lines do not wrap more.
+                if case .text = layer.content, !fullBleedX {
+                    l.width = min(newWidth - 2 * max(0, layer.x * sx), layer.width * sx)
+                }
+                l.x = fullBleedX ? 0 : place(start: layer.x, length: layer.width, newLength: l.width, old: oldW, new: newWidth, scale: sx)
+                l.y = fullBleedY ? 0 : place(start: layer.y, length: layer.height, newLength: l.height, old: oldH, new: newHeight, scale: sy)
             }
-            l.x = fullBleedX ? 0 : (cx - l.width / 2).rounded()
-            l.y = fullBleedY ? 0 : (cy - l.height / 2).rounded()
             switch l.content {
             case .text(var t):
                 t.size = (t.size * s).rounded()

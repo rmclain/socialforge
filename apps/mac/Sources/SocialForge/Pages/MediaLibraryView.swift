@@ -10,7 +10,6 @@ struct MediaLibraryView: View {
     @Query(sort: \CreativeTemplate.updatedAt, order: .reverse) private var allTemplates: [CreativeTemplate]
     @State private var filter: Filter = .all
     @State private var sort: Sort = .filename
-    @State private var collection: String?
     @State private var dropTargeted = false
     @State private var lastClicked: UUID?
     @State private var newCollection = ""
@@ -21,6 +20,8 @@ struct MediaLibraryView: View {
 
     private var mine: [MediaAsset] { allAssets.filter { $0.workspaceID == model.workspaceID } }
     private var collections: [String] { Array(Set(mine.map(\.collection).filter { !$0.isEmpty })).sorted() }
+
+    private var collection: String? { model.mediaCollection }
 
     private var assets: [MediaAsset] {
         let q = model.searchText
@@ -52,9 +53,9 @@ struct MediaLibraryView: View {
                 dropZone
                 HStack(spacing: Space.sm) {
                     Menu {
-                        Button("All media") { collection = nil }
+                        Button("All media") { model.mediaCollection = nil }
                         if !collections.isEmpty { Divider() }
-                        ForEach(collections, id: \.self) { c in Button(c) { collection = c } }
+                        ForEach(collections, id: \.self) { c in Button(c) { model.mediaCollection = c } }
                     } label: {
                         HStack(spacing: Space.xs) {
                             Text(collection ?? "All media").font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.text)
@@ -99,6 +100,12 @@ struct MediaLibraryView: View {
             Task { _ = await model.importMedia(urls) }
             return true
         } isTargeted: { dropTargeted = $0 }
+        .confirmationDialog(deleteTitle, isPresented: deleteConfirming, titleVisibility: .visible) {
+            Button("Move to Trash", role: .destructive) { confirmDelete() }
+            Button("Cancel", role: .cancel) { model.mediaPendingDelete = [] }
+        } message: {
+            Text(deleteMessage)
+        }
         .alert("Add to collection", isPresented: $showCollectionPrompt) {
             TextField("Collection name", text: $newCollection)
             Button("Add") { setCollection(newCollection) }
@@ -166,8 +173,11 @@ struct MediaLibraryView: View {
                 Divider()
                 Button("New Collection…") { newCollection = ""; showCollectionPrompt = true }
                 Button("Remove from Collection") { setCollection("") }
+                    .disabled(targets.allSatisfy { $0.collection.isEmpty })
             }
             .fixedSize()
+            Button("Delete…", role: .destructive) { model.mediaPendingDelete = targets.map(\.uuid) }
+                .help("Delete the selected media and move their files to the Trash (Command-Delete)")
             Button("Use in Bulk Publisher") {
                 model.bulk.assetIDs = shown.filter { model.mediaSelection.contains($0.uuid) }.map(\.uuid)
                 model.page = .bulk
@@ -180,9 +190,43 @@ struct MediaLibraryView: View {
         .card(padding: Space.sm)
     }
 
-    private func setCollection(_ name: String) {
-        for a in model.assets(model.mediaSelection) { a.collection = name.trimmingCharacters(in: .whitespaces) }
-        try? model.context.save()
+    private func setCollection(_ name: String, for targets: [MediaAsset]? = nil) {
+        model.setCollection(name, for: targets ?? model.assets(model.mediaSelection))
+        // The collection being shown may now be empty: go back to all media.
+        if let c = collection, !collections.contains(c) { model.mediaCollection = nil }
+    }
+
+    // MARK: Delete
+
+    private var deleteConfirming: Binding<Bool> {
+        Binding(get: { !model.mediaPendingDelete.isEmpty }, set: { if !$0 { model.mediaPendingDelete = [] } })
+    }
+
+    private var pendingDelete: [MediaAsset] { model.assets(model.mediaPendingDelete) }
+
+    private var deleteTitle: String {
+        let t = pendingDelete
+        return t.count == 1 ? "Delete \u{201C}\(t[0].filename)\u{201D}?" : "Delete \(t.count) items?"
+    }
+
+    private var deleteMessage: String {
+        let t = pendingDelete
+        let usage = model.mediaUsage(t)
+        var parts: [String] = []
+        if usage.posts > 0 { parts.append("\(usage.posts) post\(usage.posts == 1 ? "" : "s") not yet published") }
+        if usage.designs > 0 { parts.append("\(usage.designs) design\(usage.designs == 1 ? "" : "s") or template\(usage.designs == 1 ? "" : "s")") }
+        let files = t.count == 1 ? "Its file moves" : "Their files move"
+        let base = "\(files) to the Trash, with any variants. The originals you imported from are not touched."
+        guard !parts.isEmpty else { return base }
+        return "Still used in " + parts.joined(separator: " and ") + ", which will lose this media. " + base
+    }
+
+    private func confirmDelete() {
+        let targets = pendingDelete
+        model.mediaPendingDelete = []
+        guard !targets.isEmpty else { return }
+        model.deleteMedia(targets, trashFiles: true)
+        if let c = collection, !collections.contains(c) { model.mediaCollection = nil }
     }
 
     private func selectionText(_ shown: [MediaAsset]) -> String {
@@ -218,14 +262,16 @@ struct MediaLibraryView: View {
         }
         Button("Use as AI Background Reference") { model.aiStudio.referenceAssetID = a.uuid; model.page = .ai }
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.storedURL)) }
+        Menu("Collection") {
+            ForEach(collections, id: \.self) { c in Button(c) { setCollection(c, for: targets) } }
+            Divider()
+            Button("New Collection…") { model.mediaSelection = Set(targets.map(\.uuid)); newCollection = ""; showCollectionPrompt = true }
+            Button("Remove from Collection") { setCollection("", for: targets) }
+                .disabled(targets.allSatisfy { $0.collection.isEmpty })
+        }
         Divider()
-        Button("Remove from Library", role: .destructive) {
-            for t in targets {
-                for v in model.variants(of: t.uuid) { model.context.delete(v) }
-                model.context.delete(t)
-            }
-            model.mediaSelection.subtract(targets.map(\.uuid))
-            try? model.context.save()
+        Button(targets.count == 1 ? "Delete…" : "Delete \(targets.count) Items…", role: .destructive) {
+            model.mediaPendingDelete = targets.map(\.uuid)
         }
     }
 }
@@ -366,7 +412,7 @@ struct AssetDetails: View {
                     Thumbnail(path: asset.storedPath, maxPixel: 600, contentMode: .fit)
                 } else {
                     // Plays video and audio in place.
-                    VideoPlayer(player: AVPlayer(url: asset.storedURL))
+                    MediaPlayer(url: asset.storedURL)
                 }
             }
             .frame(height: asset.kind == "audio" ? 64 : 200)

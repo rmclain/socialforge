@@ -118,6 +118,33 @@ enum SelfTest {
         check("adding a layer can be undone", studio.canUndo)
         studio.undo()
         check("undo removes it", studio.document?.layers.count == layerCount)
+        // Issue: Delete on a selected canvas element removes it; a locked one stays.
+        studio.addText(model: model)
+        let added = studio.selectedLayer
+        let key = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                   windowNumber: NSApp.windows.first?.windowNumber ?? 0, context: nil,
+                                   characters: "\u{8}", charactersIgnoringModifiers: "\u{8}", isARepeat: false, keyCode: 51)
+        if let key, key.window != nil {
+            let w = key.window!
+            // As a click on the canvas does: the search field gives up focus.
+            StudioDeleteKey.endTextEditing(in: w)
+            check("the Delete key removes the selected canvas layer", StudioDeleteKey.handle(key, studio: studio)
+                  && studio.document?.layers.contains { $0.id == added } == false,
+                  "first responder: \(String(describing: w.firstResponder))")
+        } else {
+            studio.deleteSelection()
+            check("Delete Layer removes the selected canvas layer", studio.document?.layers.contains { $0.id == added } == false)
+        }
+        if let first = studio.document?.layers.first?.id {
+            studio.changeLayer(first) { $0.isLocked = true }
+            studio.selectedLayer = first
+            studio.deleteSelection()
+            check("a locked layer is not deleted and says why", studio.document?.layers.contains { $0.id == first } == true
+                  && studio.exportMessage?.contains("locked") == true)
+            studio.changeLayer(first) { $0.isLocked = false }
+            studio.exportMessage = nil
+        }
+        check("deleting is undoable", studio.canUndo)
         func headlineColor() -> UInt32? {
             guard let d = studio.rendered(brand: model.brandKit?.style), let l = d.layers.first(where: { $0.name == "Headline" }), case .text(let t) = l.content else { return nil }
             return t.color.hex
@@ -143,17 +170,204 @@ enum SelfTest {
         await studio.export(model: model)
         check("export adds a PNG to the library", ((try? ctx.fetchCount(FetchDescriptor<MediaAsset>())) ?? 0) == countBefore + 1, studio.exportMessage ?? "")
 
+        // Issue: Generate all sizes says when it is done and keeps the results together.
+        let setName = StudioModel.sizeSetName(for: studio.document?.name ?? "")
+        model.mediaSelection = [assets[1].uuid]
+        await studio.generateAllSizes(model: model)
+        check("exports leave the Media Library selection alone (it fills the photo slot)", model.mediaSelection == [assets[1].uuid])
+        let sizeCount = CanvasPreset.all.count
+        func setDesigns() -> [Design] { ((try? ctx.fetch(FetchDescriptor<Design>())) ?? []).filter { $0.sizeSet == setName } }
+        func setImages() -> [MediaAsset] { ((try? ctx.fetch(FetchDescriptor<MediaAsset>())) ?? []).filter { $0.collection == "Sizes · \(setName)" } }
+        check("Generate all sizes says it is done", studio.exportMessage?.hasPrefix("Done: \(sizeCount) sizes") == true && studio.busy == nil
+              && studio.sizesProgress == nil, studio.exportMessage ?? "")
+        check("the sizes are one set of designs and one collection", setDesigns().count == sizeCount && setImages().count == sizeCount,
+              "\(setDesigns().count) designs, \(setImages().count) images")
+        check("Show in Finder has every file", studio.lastSizes?.files.count == sizeCount
+              && studio.lastSizes?.files.allSatisfy { FileManager.default.fileExists(atPath: $0.path) } == true)
+        await studio.generateAllSizes(model: model)
+        check("running it again replaces the set's designs and still says done", setDesigns().count == sizeCount
+              && studio.exportMessage?.hasPrefix("Done: \(sizeCount) sizes") == true, "\(setDesigns().count) · \(studio.exportMessage ?? "")")
+        check("a size's name maps back to its set", StudioModel.sizeSetName(for: "\(setName) · Story") == setName)
+        print("SIZES \(studio.lastSizes?.files.map(\.path).joined(separator: " ") ?? "")")
+
+        // Issue: Remove from Collection takes media out, including Studio exports under Branded.
+        let plain = assets[5], branded = (try? ctx.fetch(FetchDescriptor<MediaAsset>()))?.first { $0.tags.contains("branded") }
+        model.setCollection("Self Test", for: [plain])
+        check("Add to collection files the image", plain.collection == "Self Test")
+        model.setCollection("", for: [plain])
+        check("Remove from Collection empties it", plain.collection.isEmpty)
+        if let branded {
+            model.setCollection("", for: [branded])
+            check("a removed Studio export leaves the Branded filter too", branded.collection.isEmpty && !branded.tags.contains("branded"))
+        } else {
+            check("a Studio export is in the library", false)
+        }
+
+        // Issue: double-clicking a calendar day starts a post for that day.
+        let pageBefore = model.page
+        let inThreeDays = Calendar.current.date(byAdding: .day, value: 3, to: .now)!
+        let opened = CalendarCompose.open(on: inThreeDays, model: model)
+        check("double-clicking a day opens the Composer at 9:00 that day", opened && model.page == .composer
+              && Calendar.current.isDate(model.composer.when, inSameDayAs: inThreeDays) && Calendar.current.component(.hour, from: model.composer.when) == 9)
+        model.page = pageBefore
+        let yesterday = Calendar.current.date(byAdding: .day, value: -1, to: .now)!
+        check("a past day does not open the Composer", !CalendarCompose.open(on: yesterday, model: model) && model.page == pageBefore)
+
         // Analytics and command tools work on real data.
         let summary = Analytics.summarize(model.workspacePublications.map { PostRecord(platform: $0.platform, status: $0.statusRaw, scheduledAt: $0.scheduledAt) },
                                           from: .now.addingTimeInterval(-86_400), to: .now.addingTimeInterval(90 * 86_400))
         check("analytics counts the 30 approved posts", summary.scheduled == 30, "\(summary.scheduled)")
         check("assistant time parsing", ToolRunner.parseTime("9 AM") == LocalTime(9) && ToolRunner.parseTime("8:30pm") == LocalTime(20, 30))
 
+        // Issue: first launch sets up the first brand (or imports one), then opens Accounts.
+        check("a library with work in it skips the Welcome sheet", !model.needsBrandSetup)
+        if let empty = try? ModelContainer(for: SwiftData.Schema(AppSchema.models), configurations: ModelConfiguration(isStoredInMemoryOnly: true)) {
+            let fresh = AppModel(container: empty)
+            check("a new library asks for its first brand", fresh.needsBrandSetup && fresh.workspaces.count == 1)
+            let kit = await fresh.completeBrandSetup(name: "  Juniper Goods ", colorHex: 0x2BC48A, voice: "Warm and plain-spoken",
+                                                     hashtags: ["#handmade", " slowliving"], logo: nil)
+            check("Create Brand names the workspace and makes its kit", fresh.workspace?.name == "Juniper Goods" && fresh.workspace?.colorHex == 0x2BC48A
+                  && kit?.name == "Juniper Goods" && kit?.colors.contains(0x2BC48A) == true && kit?.hashtags == ["handmade", "slowliving"]
+                  && fresh.brandKit?.voice == "Warm and plain-spoken")
+            check("then Accounts opens and the sheet does not come back", fresh.page == .accounts && !fresh.showWelcome && !fresh.needsBrandSetup)
+            // The kit exports to a .sfbrand file, and a second new library sets up by importing it.
+            if let made = kit {
+                let file = FileManager.default.temporaryDirectory.appending(path: "selftest-\(UUID().uuidString).sfbrand")
+                BrandKitIO.write(made, templates: [], to: file)
+                if let other = try? ModelContainer(for: SwiftData.Schema(AppSchema.models), configurations: ModelConfiguration(isStoredInMemoryOnly: true)) {
+                    let second = AppModel(container: other)
+                    let imported = BrandKitIO.importKit(from: file, model: second)
+                    if let imported { second.completeBrandImport(imported) }
+                    check("Import Brand Kit on the Welcome sheet sets up the brand from a .sfbrand file",
+                          imported?.voice == "Warm and plain-spoken" && imported?.hashtags == ["handmade", "slowliving"]
+                          && second.workspace?.name == "Juniper Goods" && second.workspace?.colorHex == 0x2BC48A
+                          && second.page == .accounts && !second.needsBrandSetup)
+                }
+                try? FileManager.default.removeItem(at: file)
+                check("a file that is not a brand kit is refused", BrandKitIO.importKit(from: URL(fileURLWithPath: "/etc/hosts"), model: fresh) == nil)
+            }
+            check("every platform links to where its developer keys are made",
+                  PlatformRegistry.all.allSatisfy { PlatformKeys.forPlatform($0.platform) != nil }
+                  && PlatformKeysList.redirect(for: "pinterest")?.hasSuffix("/pinterest/callback") == true
+                  && PlatformKeysList.redirect(for: "threads")?.hasPrefix("https://") == true)
+            // A brand saves its files to its own folder (Brand Kits > Save files to).
+            if let made = kit {
+                let folder = FileManager.default.temporaryDirectory.appending(path: "selftest-brand-\(UUID().uuidString)/Juniper Goods", directoryHint: .isDirectory)
+                let library = fresh.libraryStorage.root
+                check("a brand folder is created when chosen", fresh.setBrandFolder(folder, for: made)
+                      && FileManager.default.fileExists(atPath: folder.path) && fresh.storage.root.standardizedFileURL == folder.standardizedFileURL)
+                let png = FileManager.default.temporaryDirectory.appending(path: "selftest-\(UUID().uuidString).png")
+                let rep = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: 8, pixelsHigh: 8, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true,
+                                           isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: 0, bitsPerPixel: 0)
+                rep?.setColor(NSColor(red: 0.2, green: 0.7, blue: 0.5, alpha: 1), atX: 1, y: 1)
+                try? rep?.representation(using: .png, properties: [:])?.write(to: png)
+                let added = await fresh.importMedia([png])
+                check("new media for that brand is saved in its folder", added.first?.storedPath.hasPrefix(folder.standardizedFileURL.path) == true,
+                      added.first?.storedPath ?? "nothing imported")
+                check("the publisher's own files stay in the app's library", fresh.libraryStorage.root == library && fresh.runner.storage.root == library)
+                check("Suggested folder is Documents/<brand>", AppModel.suggestedFolder(for: "Brand1").path == URL.documentsDirectory.appending(path: "Brand1").path)
+
+                // Media Library Delete warns about posts and designs, and keeps a stored file another record still uses.
+                if let a = added.first {
+                    let twin = MediaAsset(workspaceID: a.workspaceID, filename: a.filename, storedPath: a.storedPath,
+                                          sourcePath: a.sourcePath, sha256: a.sha256, bytes: a.bytes)
+                    fresh.context.insert(twin)
+                    let post = Publication(workspaceID: a.workspaceID, scheduledAt: .now.addingTimeInterval(86_400), timeZoneID: "UTC")
+                    post.assetID = twin.uuid
+                    fresh.context.insert(post)
+                    let design = Design(workspaceID: a.workspaceID, document: StudioModel.productPin().withPhoto(twin.storedPath))
+                    fresh.context.insert(design)
+                    let usage = fresh.mediaUsage([twin])
+                    check("Delete warns about a post and a design that still use the media", usage.posts == 1 && usage.designs >= 1,
+                          "\(usage.posts) posts, \(usage.designs) designs")
+                    post.status = .published
+                    check("published posts do not count as still using the media", fresh.mediaUsage([twin]).posts == 0)
+                    let twinID = twin.uuid
+                    fresh.mediaSelection = [twinID]
+                    fresh.deleteMedia([twin], trashFiles: true)
+                    check("Delete removes the record and its selection", fresh.asset(twinID) == nil && fresh.mediaSelection.isEmpty)
+                    check("Delete keeps a stored file that another library item still uses", FileManager.default.fileExists(atPath: a.storedPath))
+                    fresh.context.delete(post)
+                    fresh.context.delete(design)
+                }
+
+                // Agents over MCP: reads see the library; changes go through the inbox and land in Needs Review.
+                if let a = added.first, let ws = fresh.workspaceID {
+                    let inbox = fresh.agentInbox
+                    let account = SocialAccount(serverID: "selftest-agent-acct", workspaceID: ws, platform: "pinterest", name: "Agent Test", status: "connected")
+                    fresh.context.insert(account)
+                    try? fresh.context.save()
+                    let brand = JSONValue.string(ws.uuidString)
+                    let listed = AgentMCP.handle("list_media", args: ["brand": brand, "query": .string(a.filename)], client: "Claude Code",
+                                                 context: fresh.context, inbox: inbox)
+                    check("an agent's list_media finds the brand's media", !listed.isError && listed.text.contains(a.uuid.uuidString))
+                    let accounts = AgentMCP.handle("list_accounts", args: ["brand": brand], client: "Claude Code", context: fresh.context, inbox: inbox)
+                    check("an agent's list_accounts lists the brand's accounts", accounts.text.contains("selftest-agent-acct"))
+                    let when = JSONValue.string(AgentTools.iso(.now.addingTimeInterval(2 * 86_400)))
+                    let queued = AgentMCP.handle("create_posts", args: ["brand": brand, "posts": .array([
+                        .object(["account_id": .string("selftest-agent-acct"), "media_id": .string(a.uuid.uuidString), "scheduled_at": when, "title": .string("Agent pin")]),
+                        .object(["account_id": .string("Agent Test"), "file": .string(png.path), "scheduled_at": when]),
+                    ])], client: "Claude Code", context: fresh.context, inbox: inbox)
+                    let bad = AgentMCP.handle("create_posts", args: ["brand": brand, "posts": .array([
+                        .object(["account_id": .string("selftest-agent-acct"), "file": .string("/nope.png"), "scheduled_at": when]),
+                    ])], client: "Codex", context: fresh.context, inbox: inbox)
+                    check("a request with a missing file is refused before it is queued", bad.isError && inbox.pendingCount == 1, bad.text)
+                    let unknown = AgentMCP.handle("create_posts", args: ["brand": brand, "posts": .array([
+                        .object(["account_id": .string("no-such-account"), "media_id": .string(a.uuid.uuidString), "scheduled_at": when]),
+                    ])], client: "Codex", context: fresh.context, inbox: inbox)
+                    check("an agent's change is queued, not written", !queued.isError && queued.text.contains("Queued") && fresh.workspacePublications.allSatisfy { $0.runName != "From Claude Code" })
+                    let handled = await fresh.processAgentInbox()
+                    let made = fresh.workspacePublications.filter { $0.runName == "From Claude Code" }
+                    check("the app applies queued requests", handled == 2 && inbox.pendingCount == 0, "\(handled) handled")
+                    check("agent posts land in Needs Review, for the person to approve",
+                          made.count == 2 && made.allSatisfy { $0.status == .needsReview && $0.accountID == "selftest-agent-acct" && $0.assetID == a.uuid }
+                          && made.contains { $0.title == "Agent pin" }, "\(made.count) posts")
+                    let unknownID = unknown.text.components(separatedBy: " ").dropFirst(3).first.flatMap { UUID(uuidString: String($0.dropLast())) }
+                    let failed = unknownID.flatMap { inbox.result($0) }
+                    check("a request naming an unknown account makes nothing and says why",
+                          failed?.ok == false && failed?.message.contains("no account") == true && !fresh.workspacePublications.contains { $0.runName == "From Codex" },
+                          failed?.message ?? unknown.text)
+                    let status = AgentMCP.handle("get_request_status", args: [:], client: "Claude Code", context: fresh.context, inbox: inbox)
+                    check("get_request_status reports what was made", status.text.contains(made[0].uuid.uuidString) || status.text.contains(made.last?.uuid.uuidString ?? "-"))
+                    for p in made { fresh.context.delete(p) }
+                    fresh.context.delete(account)
+                    try? fresh.context.save()
+                    try? FileManager.default.removeItem(at: inbox.root)
+                }
+
+                // Deleting a generated result from AI Studio removes it from the batch, the library, and the job.
+                if let a = added.first {
+                    let job = AIJob(workspaceID: fresh.workspaceID ?? UUID(), provider: "ComfyUI", kind: "image", prompt: "test")
+                    job.outputAssetIDs = [a.uuid]
+                    fresh.context.insert(job)
+                    fresh.aiStudio.lastJobID = job.uuid
+                    fresh.aiStudio.resultIDs = [a.uuid]
+                    fresh.aiStudio.selectedResult = a.uuid
+                    let id = a.uuid
+                    fresh.deleteMedia([a], trashFiles: false)
+                    fresh.aiStudio.resultIDs.removeAll { $0 == id }
+                    check("Delete on a result removes it from the library and the job's history",
+                          fresh.asset(id) == nil && job.outputAssetIDs.isEmpty && fresh.aiStudio.resultIDs.isEmpty)
+                }
+                fresh.setBrandFolder(nil, for: made)
+                check("Use Default goes back to the app's library", fresh.storage.root == library)
+                try? FileManager.default.removeItem(at: folder.deletingLastPathComponent())
+                try? FileManager.default.removeItem(at: png)
+            }
+            check("Appearance offers System, Light, and Dark", ThemeStore.Mode.allCases.map(\.title) == ["System", "Light", "Dark"]
+                  && ThemeStore.Mode.system.appearance == nil && ThemeStore.Mode.dark.appearance?.name == .darkAqua && ThemeStore.Mode.light.appearance?.name == .aqua)
+            let skipped = AppModel(container: (try? ModelContainer(for: SwiftData.Schema(AppSchema.models), configurations: ModelConfiguration(isStoredInMemoryOnly: true))) ?? empty)
+            skipped.finishBrandSetup()
+            check("Skip for Now opens Accounts", skipped.page == .accounts && !skipped.showWelcome)
+        } else {
+            check("an empty library opens", false)
+        }
+
         // On-Mac publishing (the default): the app publishes due posts itself.
         check("publishing defaults to this Mac", model.publishMode == .mac)
         guard let mock = model.addMockAccount() else { check("mock account added", false); return }
         check("mock account is labeled as mock", mock.isMock && mock.source == "mac" && mock.name.contains("Mock"))
-        let mockFile = PublishRunner.mockFile(storage: model.storage)
+        let mockFile = PublishRunner.mockFile(storage: model.libraryStorage)
         let pinsBefore = await MockPinterestTarget(file: mockFile).posts().count
         func duePosts(_ n: Int, from: Int) -> [Publication] {
             assets[from..<(from + n)].map { a in

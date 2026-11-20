@@ -41,6 +41,10 @@ final class StudioModel {
     var selectedAudio: UUID?
     /// Export progress, 0...1, while a video renders.
     var videoProgress: Double?
+    /// Progress, 0...1, while Generate all sizes runs.
+    var sizesProgress: Double?
+    /// What the last Generate all sizes made, for Show in Library and Show in Finder.
+    var lastSizes: (collection: String, files: [URL])?
     @ObservationIgnored var playback: Task<Void, Never>?
     @ObservationIgnored var audioPlayer: AVPlayer?
     @ObservationIgnored var exportTask: Task<Void, Never>?
@@ -164,6 +168,21 @@ final class StudioModel {
     func delete(_ id: UUID) {
         change { $0.layers.removeAll { $0.id == id && !$0.isLocked } }
         if selected == nil { selectedLayer = nil }
+    }
+
+    /// Something on the canvas or in the Layers panel is selected that Delete can remove.
+    var canDeleteSelection: Bool { selectedAudio != nil || selected != nil }
+
+    /// Delete key, Edit › Delete Layer: removes the selected layer or audio track.
+    /// A locked layer stays and says why.
+    func deleteSelection() {
+        if let id = selectedAudio { removeTrack(id); return }
+        guard let layer = selected else { return }
+        if layer.isLocked {
+            exportMessage = "“\(layer.name)” is locked. Unlock it in Layers to delete it."
+            return
+        }
+        delete(layer.id)
     }
 
     func duplicateLayer(_ id: UUID) {
@@ -290,7 +309,19 @@ final class StudioModel {
         do {
             let final = doc
             _ = try await Task.detached { try CreativeRenderer.export(final, to: url) }.value
-            let added = await model.importMedia([url])
+            // Importing selects what it adds. An export must not: the selected image fills the
+            // photo slot of every template and new design, so each export showed up inside the
+            // next ones (the "jumbled" sizes and template thumbnails).
+            let selection = model.mediaSelection
+            var added = await model.importMedia([url])
+            model.mediaSelection = selection
+            // The same picture is already in the library (an unchanged design exported again):
+            // use that one, so the export still lands in its collection and is reported.
+            if added.isEmpty, let hash = try? ContentHash.sha256(of: url), let ws = model.workspaceID,
+               let same = ((try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.sha256 == hash }))) ?? []).first(where: { $0.workspaceID == ws }) {
+                try? FileManager.default.removeItem(at: url)
+                added = [same]
+            }
             if let a = added.first {
                 a.title = previewValues["title"] ?? doc.name
                 a.collection = collection
@@ -306,19 +337,48 @@ final class StudioModel {
     }
 
     /// The design's "Generate all sizes": one PNG per platform canvas, text still live in each saved design.
+    ///
+    /// The sizes form a set named after the design: one Media Library collection
+    /// ("Sizes · name") and one row in the Studio gallery. Running it again replaces
+    /// the set's designs rather than adding another six.
     func generateAllSizes(model: AppModel) async {
         guard let doc = document, let workspaceID = model.workspaceID else { return }
-        busy = "Generating \(CanvasPreset.all.count) sizes…"
-        defer { busy = nil }
-        var made = 0
-        for preset in CanvasPreset.all {
-            let resized = doc.resized(width: preset.width, height: preset.height, name: "\(doc.name) · \(preset.name)")
-            model.context.insert(Design(workspaceID: workspaceID, document: resized))
-            if await export(model: model, document: resized, suffix: "-\(preset.id)") != nil { made += 1 }
+        let setName = Self.sizeSetName(for: doc.name)
+        let collection = "Sizes · \(setName)"
+        let presets = CanvasPreset.all
+        exportMessage = nil
+        lastSizes = nil
+        defer { busy = nil; sizesProgress = nil }
+        let existing = ((try? model.context.fetch(FetchDescriptor<Design>())) ?? []).filter { $0.workspaceID == workspaceID && $0.sizeSet == setName }
+        var files: [URL] = []
+        for (i, preset) in presets.enumerated() {
+            busy = "Making \(preset.name), \(i + 1) of \(presets.count)…"
+            sizesProgress = Double(i) / Double(presets.count)
+            let resized = doc.resized(width: preset.width, height: preset.height, name: "\(setName) · \(preset.name)")
+            if let old = existing.first(where: { $0.name == resized.name }) {
+                old.json = (try? resized.json()) ?? old.json
+                old.updatedAt = .now
+            } else {
+                let d = Design(workspaceID: workspaceID, document: resized)
+                d.sizeSet = setName
+                model.context.insert(d)
+            }
+            if let a = await export(model: model, document: resized, suffix: "-\(preset.id)", collection: collection) {
+                files.append(a.storedURL)
+            }
         }
         try? model.context.save()
-        exportMessage = "Made \(made) sizes. Each is saved as an editable design and added to the Media Library."
-        model.log("Generated \(made) platform sizes of “\(doc.name)”", symbol: "aspectratio")
+        lastSizes = (collection, files)
+        exportMessage = files.count == presets.count
+            ? "Done: \(files.count) sizes of “\(setName)”. The images are in the Media Library under “\(collection)”; the editable designs are in Designs."
+            : "Made \(files.count) of \(presets.count) sizes. \(exportMessage ?? "")"
+        model.log("Generated \(files.count) platform sizes of “\(setName)”", symbol: "aspectratio")
+    }
+
+    /// "Mug · Story" made from a size goes back to "Mug", so a set never nests.
+    static func sizeSetName(for name: String) -> String {
+        for p in CanvasPreset.all where name.hasSuffix(" · \(p.name)") { return String(name.dropLast(p.name.count + 3)) }
+        return name
     }
 
     /// 100 product images → 100 branded graphics: one render per asset, with its title and price.

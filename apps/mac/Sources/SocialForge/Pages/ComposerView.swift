@@ -36,8 +36,9 @@ final class ComposerModel {
         switch p { case "pinterest": "Pin"; case "facebook": "FB"; case "instagram": "IG"; case "threads": "Threads"; case "linkedin": "In"; default: "X" }
     }
 
-    func startNew(model: AppModel) {
+    func startNew(model: AppModel, at time: Date? = nil) {
         contentID = nil
+        if let time { when = time }
         title = ""; body = ""; link = ""; altText = ""
         hashtags = (model.brandKit?.hashtags ?? []).map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "# ")) }
         assetID = model.mediaSelection.first

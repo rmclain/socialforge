@@ -161,6 +161,7 @@ struct BulkView: View {
                         .disabled(model.mediaSelection.isEmpty)
                     Button("Import Folder…") { ImportPanel.run(model: model); takeNextImport() }
                     Button("Choose CSV…") { chooseCSV() }
+                    Button("Save Sample CSV…") { SampleCSVPanel.run() }
                     if !runAssets.isEmpty {
                         Divider()
                         Button("Clear Images") { bulk.assetIDs = [] }
@@ -781,7 +782,10 @@ struct CSVMappingPanel: View {
                     .background(DS.fill, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
                 }
             } else {
-                Text("No CSV. Drop one with your images, or choose one from the Images menu.").font(DS.body).foregroundStyle(DS.text2)
+                Text("No CSV. Drop one with your images, or choose one from the Images menu. Each row names an image file and the link its post goes to.").font(DS.body).foregroundStyle(DS.text2)
+                Button("Save Sample CSV…", systemImage: "tablecells") { SampleCSVPanel.run() }
+                    .buttonStyle(SecondaryButtonStyle())
+                    .help("A reference CSV: filename, url, title, description, alt_text")
             }
         }
     }

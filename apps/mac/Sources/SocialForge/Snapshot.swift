@@ -53,6 +53,35 @@ enum Snapshot {
                     capture(to: "\(dir)/\(page.rawValue)-\(mode).png")
                 }
             }
+            // "welcome": the first-launch brand sheet over the shell.
+            if only?.contains("welcome") == true {
+                model.page = .home
+                model.showWelcome = true
+                for mode in ["light", "dark"] {
+                    NSApp.appearance = NSAppearance(named: mode == "light" ? .aqua : .darkAqua)
+                    try? await Task.sleep(for: .seconds(1.2))
+                    capture(to: "\(dir)/welcome-\(mode).png")
+                    capture(to: "\(dir)/welcome-sheet-\(mode).png", window: NSApp.windows.first { $0.isSheet && $0.isVisible })
+                }
+                model.showWelcome = false
+            }
+            // "sizes": Generate all sizes finished (the Done bar), then the gallery with the size set.
+            if only?.contains("sizes") == true {
+                model.page = .studio
+                if model.studio.document == nil, let d = SeedData.sampleDesign(model) { model.studio.open(d, designID: nil) }
+                await model.studio.generateAllSizes(model: model)
+                for mode in ["light", "dark"] {
+                    NSApp.appearance = NSAppearance(named: mode == "light" ? .aqua : .darkAqua)
+                    try? await Task.sleep(for: .seconds(1.6))
+                    capture(to: "\(dir)/sizes-done-\(mode).png")
+                }
+                model.studio.document = nil  // selection kept on purpose: the inspector must survive it
+                for mode in ["light", "dark"] {
+                    NSApp.appearance = NSAppearance(named: mode == "light" ? .aqua : .darkAqua)
+                    try? await Task.sleep(for: .seconds(2))
+                    capture(to: "\(dir)/sizes-gallery-\(mode).png")
+                }
+            }
             if only == nil || only?.contains("settings") == true {
                 let main = NSApp.windows.first { $0.canBecomeMain && !$0.isSheet }
                 openSettings()

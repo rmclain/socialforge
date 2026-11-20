@@ -112,6 +112,17 @@ public struct UpdateChecker: Sendable {
 public struct UpdateInstaller: Sendable {
     public init() {}
 
+    /// A shell command that waits for process `pid` to exit, then opens `app`.
+    ///
+    /// The relaunch runs this instead of opening the new copy right away: opening
+    /// first and then quitting left two copies running whenever the quit was
+    /// refused (an open sheet refuses terminate). Paths go in as arguments, never
+    /// into the script text. `opener` is replaceable for tests.
+    public static func relaunchCommand(waitingFor pid: Int32, then app: URL, opener: String = "/usr/bin/open") -> (tool: String, arguments: [String]) {
+        let script = #"while /bin/kill -0 "$1" 2>/dev/null; do /bin/sleep 0.2; done; exec "$2" "$3""#
+        return ("/bin/sh", ["-c", script, "relaunch", String(pid), opener, app.path])
+    }
+
     public enum Failure: Error, CustomStringConvertible, Equatable, LocalizedError {
         case download(String), unpack, noApp, signature(String), team(expected: String, found: String)
         public var description: String {

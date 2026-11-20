@@ -239,6 +239,9 @@ final class BrandKit {
     /// Logo file in the library (PNG with transparency works best).
     var logoPath: String = ""
     var imageStyle: String = ""
+    /// Where this brand's imports, exports, and AI generations are saved, such as
+    /// ~/Documents/Oak & Ember. Empty: the app's library in Application Support.
+    var folderPath: String = ""
 
     init(workspaceID: UUID, name: String) {
         self.workspaceID = workspaceID
@@ -416,6 +419,9 @@ final class Design {
     var name: String
     var json: Data
     var updatedAt: Date = Date.now
+    /// For a design made by Generate all sizes: the name of the design it was made from.
+    /// The Studio gallery shows a set as one row. Empty for every other design.
+    var sizeSet: String = ""
 
     init(workspaceID: UUID, document: CreativeDocument) {
         self.workspaceID = workspaceID

@@ -149,6 +149,29 @@ struct KitEditor: View {
                     Text("A PNG with transparency works best. Templates place it in their logo slot.").font(DS.caption).foregroundStyle(DS.text3)
                 }
                 VStack(alignment: .leading, spacing: Space.sm) {
+                    SectionLabel("Save files to")
+                    HStack(spacing: Space.sm) {
+                        Image(systemName: "folder").foregroundStyle(DS.text3)
+                        Text(kit.folderPath.isEmpty ? "SocialForge's library (Application Support)"
+                             : kit.folderPath.replacingOccurrences(of: NSHomeDirectory(), with: "~"))
+                            .font(DS.body).lineLimit(2).truncationMode(.middle).textSelection(.enabled)
+                    }
+                    HStack(spacing: Space.sm) {
+                        Button("Choose Folder…", action: chooseFolder).buttonStyle(SecondaryButtonStyle())
+                        if kit.folderPath.isEmpty {
+                            Button("Use Documents") { model.setBrandFolder(AppModel.suggestedFolder(for: kit.name), for: kit) }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .help("Save to ~/Documents/\(kit.name)")
+                        } else {
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: kit.folderPath)]) }
+                                .buttonStyle(SecondaryButtonStyle())
+                            Button("Use Default") { model.setBrandFolder(nil, for: kit) }.buttonStyle(.plain).foregroundStyle(DS.text2).font(DS.small)
+                        }
+                    }
+                    Text("New imports, Studio exports, videos, and AI generations for this brand are saved here. Files already in the library stay where they are.")
+                        .font(DS.caption).foregroundStyle(DS.text3).fixedSize(horizontal: false, vertical: true)
+                }
+                VStack(alignment: .leading, spacing: Space.sm) {
                     SectionLabel("Colors")
                     Text("Color 1 is ink (text), 2 is paper, 3 is the accent. Templates refer to them by number.").font(DS.caption).foregroundStyle(DS.text3)
                     ForEach(kit.colors.indices, id: \.self) { i in
@@ -207,6 +230,18 @@ struct KitEditor: View {
         }
     }
 
+    private func chooseFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Use Folder"
+        panel.message = "Choose where \(kit.name)'s imports, exports, and AI generations are saved."
+        panel.directoryURL = kit.folderPath.isEmpty ? URL.documentsDirectory : URL(fileURLWithPath: kit.folderPath)
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        model.setBrandFolder(url, for: kit)
+    }
+
     private func chooseLogo() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg, .heic, .tiff]
@@ -249,7 +284,14 @@ enum BrandKitIO {
     static func export(_ k: BrandKit, templates: [CreativeTemplate]) {
         let panel = NSSavePanel()
         panel.nameFieldStringValue = k.name + ".sfbrand"
+        panel.message = "Save this brand kit to use on another Mac or in another workspace."
         guard panel.runModal() == .OK, let url = panel.url else { return }
+        write(k, templates: templates, to: url)
+    }
+
+    /// The .sfbrand file: the kit as JSON, with its logo and templates inside.
+    @MainActor
+    static func write(_ k: BrandKit, templates: [CreativeTemplate], to url: URL) {
         let logo = k.logoPath.isEmpty ? nil : try? Data(contentsOf: URL(fileURLWithPath: k.logoPath))
         let b = Bundle(name: k.name, colors: k.colors, headlineFont: k.headlineFont, bodyFont: k.bodyFont, voice: k.voice, audience: k.audience,
                        avoid: k.avoid, imageStyle: k.imageStyle, ctas: k.ctas, hashtags: k.hashtags, logoPNG: logo, templates: templates.map(\.json))
@@ -258,15 +300,26 @@ enum BrandKitIO {
         try? e.encode(b).write(to: url)
     }
 
+    /// Brand Kits > Import… and File > Import Brand Kit…: pick a .sfbrand file.
     @MainActor
-    static func importKit(model: AppModel) {
+    @discardableResult
+    static func importKit(model: AppModel) -> BrandKit? {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.json, .data]
-        guard panel.runModal() == .OK, let url = panel.url, let data = try? Data(contentsOf: url),
-              let b = try? JSONDecoder().decode(Bundle.self, from: data), let ws = model.workspaceID else {
+        panel.message = "Choose a SocialForge brand kit (.sfbrand), exported from Brand Kits."
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        guard let k = importKit(from: url, model: model) else {
             model.lastError = "That file is not a SocialForge brand kit."
-            return
+            return nil
         }
+        return k
+    }
+
+    /// Reads a .sfbrand file into the current workspace: the kit, its templates, and its logo.
+    @MainActor
+    static func importKit(from url: URL, model: AppModel) -> BrandKit? {
+        guard let data = try? Data(contentsOf: url), let b = try? JSONDecoder().decode(Bundle.self, from: data),
+              let ws = model.workspaceID else { return nil }
         let k = BrandKit(workspaceID: ws, name: b.name)
         k.colors = b.colors; k.headlineFont = b.headlineFont; k.bodyFont = b.bodyFont; k.voice = b.voice; k.audience = b.audience
         k.avoid = b.avoid; k.imageStyle = b.imageStyle; k.ctas = b.ctas; k.hashtags = b.hashtags
@@ -277,7 +330,8 @@ enum BrandKitIO {
         if let png = b.logoPNG {
             let tmp = FileManager.default.temporaryDirectory.appending(path: "\(b.name)-logo.png")
             try? png.write(to: tmp)
-            Task { if let a = await model.importMedia([tmp]).first { k.logoPath = a.storedPath; try? model.context.save() } }
+            Task { if let a = await model.importMedia([tmp]).first { a.collection = "Brand"; k.logoPath = a.storedPath; try? model.context.save() } }
         }
+        return k
     }
 }

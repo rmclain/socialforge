@@ -12,11 +12,13 @@ import SocialForgeKit
 //   APP_ACCENT=<id> SocialForge      run with another accent from Theme.all (UI/Theme.swift)
 //   APP_GRID=1 SocialForge           draw the 8 pt grid and the layout probes over the window
 //   SocialForge --publish-agent [--once]   the background publisher (launch agent), no window
+//   SocialForge --mcp                the MCP server for Claude, Codex, and other agents (stdio), no window
 
 @main
 enum Entry {
     static func main() {
         if PublishAgent.requested { PublishAgent.run() }
+        if AgentMCP.requested { AgentMCP.run() }
         SocialForgeApp.main()
     }
 }
@@ -66,6 +68,19 @@ struct AppCommands: Commands {
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Import Media…") { model.page = .media; ImportPanel.run(model: model) }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
+            Button("Save Sample CSV…") { SampleCSVPanel.run() }
+            Button("Import Brand Kit…") {
+                if let kit = BrandKitIO.importKit(model: model) {
+                    if model.showWelcome { model.completeBrandImport(kit) } else { model.page = .brandKits }
+                }
+            }
+            Button("Export Brand Kit…") {
+                if let k = model.brandKit {
+                    let templates = (try? model.context.fetch(FetchDescriptor<CreativeTemplate>()))?.filter { $0.workspaceID == k.workspaceID } ?? []
+                    BrandKitIO.export(k, templates: templates)
+                }
+            }
+            .disabled(model.brandKit == nil)
             Button("New Bulk Run") { model.page = .bulk }
                 .keyboardShortcut("b", modifiers: [.command, .shift])
             Button("New Design") {
@@ -87,6 +102,24 @@ struct AppCommands: Commands {
                 .keyboardShortcut("z", modifiers: [.command, .shift])
                 .disabled(model.page != .studio || !model.studio.canRedo)
         }
+        CommandGroup(after: .pasteboard) {
+            // The plain Delete key works too while the Studio is open (StudioDeleteKey).
+            if model.page == .ai {
+                Button("Delete Result") {
+                    if let id = model.aiStudio.selectedResult, let a = model.asset(id) { model.aiStudio.deleteResult(a, model: model) }
+                }
+                .keyboardShortcut(.delete, modifiers: .command)
+                .disabled(model.aiStudio.selectedResult == nil)
+            } else if model.page == .media {
+                Button("Delete…") { model.mediaPendingDelete = Array(model.mediaSelection) }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(model.mediaSelection.isEmpty)
+            } else {
+                Button("Delete Layer") { model.studio.deleteSelection() }
+                    .keyboardShortcut(.delete, modifiers: .command)
+                    .disabled(model.page != .studio || !model.studio.canDeleteSelection)
+            }
+        }
         CommandMenu("Go") {
             ForEach(Array(AppPage.allCases.enumerated()), id: \.element) { i, page in
                 if i < 9 {
@@ -107,10 +140,16 @@ struct AppCommands: Commands {
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Button(model.showInspector ? "Hide Inspector" : "Show Inspector") { model.showInspector.toggle() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            Divider()
+            Picker("Appearance", selection: Binding(get: { ThemeStore.shared.mode }, set: { ThemeStore.shared.mode = $0 })) {
+                ForEach(ThemeStore.Mode.allCases) { Text($0.title).tag($0) }
+            }
         }
         CommandMenu("Assistant") {
             Button("Ask SocialForge…") { model.showCommandPanel = true }
                 .keyboardShortcut("j")
+            Button("Connect Claude or Codex…") { model.settingsTab = .agents; model.page = .settings }
+                .keyboardShortcut("j", modifiers: [.command, .option])
         }
     }
 }
@@ -120,6 +159,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // Started from a terminal, the process is not a foreground app yet.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate()
+        ThemeStore.shared.applyMode()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
@@ -146,6 +186,12 @@ enum Store {
         return dir.appending(path: "SocialForge.store")
     }
 
+    /// Where agents' requests wait for the app (`SocialForge --mcp`): next to the store.
+    static var inboxURL: URL {
+        if isOverridden { return url.deletingLastPathComponent().appending(path: url.lastPathComponent + "-inbox", directoryHint: .isDirectory) }
+        return url.deletingLastPathComponent().appending(path: "Agent Inbox", directoryHint: .isDirectory)
+    }
+
     static func makeContainer() -> ModelContainer {
         do {
             return try ModelContainer(for: SwiftData.Schema(AppSchema.models), configurations: ModelConfiguration(url: url))
@@ -167,5 +213,19 @@ enum ImportPanel {
         guard panel.runModal() == .OK else { return }
         let urls = panel.urls
         Task { _ = await model.importMedia(urls) }
+    }
+}
+
+/// File > Save Sample CSV: the reference layout for a folder of images with links.
+enum SampleCSVPanel {
+    @MainActor
+    static func run() {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = SampleCSV.filename
+        panel.allowedContentTypes = [.commaSeparatedText]
+        panel.message = "One row per image: filename matches the image's file name, url is where its post links. Title, description, and alt text are optional."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        try? SampleCSV.text.write(to: url, atomically: true, encoding: .utf8)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 }

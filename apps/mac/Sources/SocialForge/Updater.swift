@@ -97,14 +97,40 @@ final class AppUpdater {
             }
             try? FileManager.default.removeItem(at: work)
             progress = "Relaunching…"
-            let config = NSWorkspace.OpenConfiguration()
-            config.createsNewApplicationInstance = true
-            _ = try await NSWorkspace.shared.openApplication(at: current, configuration: config)
-            NSApp.terminate(nil)
+            relaunch(current)
         } catch {
             progress = nil
             try? FileManager.default.removeItem(at: work)
             message = error.localizedDescription
+        }
+    }
+
+    /// Quits, and opens the new copy once this one has exited.
+    ///
+    /// The sheet closes first: an open sheet refuses terminate. A small shell
+    /// process waits for this process to end and then opens the app, so the new
+    /// copy never starts while this one still runs. If something else refuses
+    /// the quit, the waiter keeps waiting and the update opens when the person quits.
+    private func relaunch(_ app: URL) {
+        showSheet = false
+        for window in NSApp.windows { if let sheet = window.attachedSheet { window.endSheet(sheet) } }
+        let (tool, arguments) = UpdateInstaller.relaunchCommand(waitingFor: ProcessInfo.processInfo.processIdentifier, then: app)
+        let waiter = Process()
+        waiter.executableURL = URL(filePath: tool)
+        waiter.arguments = arguments
+        do {
+            try waiter.run()
+        } catch {
+            progress = nil
+            message = "SocialForge is updated. Quit and open it again to use the new version."
+            return
+        }
+        // Let the sheet finish closing before asking to quit.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
+            NSApp.terminate(nil)
+            // Still here: the quit was refused. The new version opens when SocialForge quits.
+            self.progress = nil
+            self.message = "Quit SocialForge to finish updating. The new version opens as soon as it closes."
         }
     }
 }

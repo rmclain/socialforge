@@ -1,3 +1,4 @@
+import AppKit
 import SwiftData
 import SwiftUI
 import SocialForgeKit
@@ -55,6 +56,12 @@ struct AccountsView: View {
                     .frame(height: 300)
                 }
                 ForEach(accounts) { a in AccountCard(account: a, queued: allPubs.filter { $0.accountID == a.serverID && [.approved, .scheduled].contains($0.status) }.count) }
+                VStack(alignment: .leading, spacing: Space.xs) {
+                    Text("Get your keys").font(.system(size: 15, weight: .semibold))
+                    Text("SocialForge posts through your own developer app on each platform. Make the app on its developer site, add the redirect URI, then paste its ID and secret into Settings > Publishing.")
+                        .font(DS.body).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
+                }
+                PlatformKeysList()
                 Text("Platform capabilities").font(.system(size: 15, weight: .semibold))
                 CapabilityMatrix()
             }
@@ -92,6 +99,10 @@ struct AccountCard: View {
                     .buttonStyle(PrimaryButtonStyle())
                 }
                 Menu {
+                    if let keys = PlatformKeys.forPlatform(account.platform), !account.isMock {
+                        Link("Open \(PlatformRegistry.spec(account.platform)?.name ?? account.platform) Developer Site", destination: keys.portal)
+                        Divider()
+                    }
                     Button("Disconnect and Forget Tokens", role: .destructive) {
                         Keychain.write(account.tokenKey, "")
                         Keychain.write(account.tokenKey + ".refresh", "")
@@ -126,6 +137,73 @@ struct AccountCard: View {
             }
         }
         .card(padding: Space.xl)
+    }
+}
+
+/// Where each platform's developer keys come from, with the redirect URI SocialForge expects.
+struct PlatformKeysList: View {
+    @Environment(AppModel.self) private var model
+
+    /// The redirect URI to register on the developer site, for platforms SocialForge signs in to.
+    static func redirect(for platform: String) -> String? {
+        switch platform {
+        case "pinterest": "http://127.0.0.1:\(OAuthLoopback.port)/pinterest/callback"
+        case "facebook", "instagram": MetaSettings.redirect
+        case "threads": MetaSettings.threadsRedirect
+        default: nil
+        }
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(PlatformKeys.all.enumerated()), id: \.element.id) { i, keys in
+                if i > 0 { Divider().overlay(DS.stroke) }
+                row(keys)
+            }
+        }
+        .card(padding: Space.xl)
+    }
+
+    private func row(_ keys: PlatformKeys) -> some View {
+        let name = PlatformRegistry.spec(keys.platform)?.name ?? keys.platform
+        return HStack(alignment: .top, spacing: Space.md) {
+            PlatformBadge(platform: keys.platform, size: 28)
+            VStack(alignment: .leading, spacing: Space.xs) {
+                HStack(spacing: Space.sm) {
+                    Text(name).font(DS.bodyMedium)
+                    StatusDot(text: keys.usedBySocialForge ? "Posts from SocialForge" : "Not used yet",
+                              color: keys.usedBySocialForge ? DS.green : DS.text3)
+                }
+                Text(keys.steps).font(DS.body).foregroundStyle(DS.textBody).fixedSize(horizontal: false, vertical: true)
+                Text("Copy: " + keys.keys.joined(separator: ", ")).font(DS.small).foregroundStyle(DS.text2)
+                if let redirect = Self.redirect(for: keys.platform) {
+                    HStack(spacing: Space.sm) {
+                        Text("Redirect URI").font(DS.small).foregroundStyle(DS.text2)
+                        Text(redirect).font(DS.mono).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(redirect, forType: .string)
+                        } label: { Image(systemName: "doc.on.doc") }
+                        .buttonStyle(IconButtonStyle()).help("Copy the redirect URI")
+                    }
+                }
+            }
+            Spacer(minLength: Space.md)
+            VStack(alignment: .trailing, spacing: Space.sm) {
+                Link(destination: keys.portal) { Label("Developer Site", systemImage: "arrow.up.right.square") }
+                    .buttonStyle(SecondaryButtonStyle()).help(keys.portal.absoluteString)
+                HStack(spacing: Space.md) {
+                    Link("Guide", destination: keys.guide).buttonStyle(LinkButtonStyle()).help(keys.guide.absoluteString)
+                    if keys.usedBySocialForge {
+                        Button("Enter Keys") { model.settingsTab = .publishing; model.page = .settings }.buttonStyle(LinkButtonStyle())
+                    }
+                }
+            }
+            .fixedSize()
+        }
+        .padding(.vertical, Space.md)
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("\(name) developer keys")
     }
 }
 

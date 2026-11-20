@@ -6,6 +6,11 @@ struct AppearanceSettings: View {
 
     var body: some View {
         Section {
+            LabeledContent("Appearance") {
+                PillPicker(options: ThemeStore.Mode.allCases, selection: $store.mode) { $0.title }
+                    .fixedSize()
+                    .accessibilityLabel("Appearance: \(store.mode.title)")
+            }
             AccentPreview()
                 .padding(.vertical, Space.xs)
             LabeledContent("Accent color") {

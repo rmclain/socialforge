@@ -157,6 +157,16 @@ final class AIStudioModel {
     @MainActor
     func cancel() { running?.cancel() }
 
+    /// Deletes one result: gone from the batch, the library, and the history, with its file in the Trash.
+    @MainActor
+    func deleteResult(_ a: MediaAsset, model: AppModel) {
+        let id = a.uuid
+        if selectedResult == id { selectedResult = nil }
+        if resultIDs.isEmpty, let job = lastJobID { resultIDs = model.aiJobOutputs(job) }
+        resultIDs.removeAll { $0 == id }
+        model.deleteMedia([a], trashFiles: true)
+    }
+
     @MainActor
     private func importOutputs(_ files: [(data: Data, ext: String)], kind: ComfyOutputKind, model: AppModel, job: AIJob, seed: Int) async throws {
         let dir = FileManager.default.temporaryDirectory.appending(path: "sf-ai-\(job.uuid.uuidString)", directoryHint: .isDirectory)
@@ -365,6 +375,9 @@ struct AIStudioView: View {
                     }
                     Spacer()
                     if let sel = ai.selectedResult, let a = model.asset(sel) {
+                        Button(role: .destructive) { delete(a) } label: { Label("Delete", systemImage: "trash") }
+                            .buttonStyle(SecondaryButtonStyle())
+                            .help("Delete this \(ComfyOutputKind(rawValue: a.kind)?.noun ?? "result") and move its file to the Trash (⌘⌫)")
                         Button("Use in Creative Studio") { useInStudio(a) }
                             .buttonStyle(PrimaryButtonStyle())
                             .help(a.kind == "audio" ? "Adds the track under the open design (or a new video design)"
@@ -377,7 +390,7 @@ struct AIStudioView: View {
                             Group {
                                 if a.kind != "image" && ai.selectedResult == a.uuid {
                                     // The selected clip or track plays in place.
-                                    VideoPlayer(player: AVPlayer(url: a.storedURL))
+                                    MediaPlayer(url: a.storedURL)
                                 } else {
                                     Thumbnail(path: a.storedPath, maxPixel: 600)
                                 }
@@ -386,6 +399,13 @@ struct AIStudioView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
                                 .overlay(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous).strokeBorder(ai.selectedResult == a.uuid ? DS.accentFill : .clear, lineWidth: 2))
                                 .onTapGesture { ai.selectedResult = a.uuid }
+                                .overlay(alignment: .topTrailing) { ResultDeleteButton { delete(a) } }
+                                .contextMenu {
+                                    Button("Use in Creative Studio") { useInStudio(a) }
+                                    Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([a.storedURL]) }
+                                    Divider()
+                                    Button("Delete", role: .destructive) { delete(a) }
+                                }
                             Text(a.notes.components(separatedBy: " · ").dropFirst().first ?? "").font(DS.mono).foregroundStyle(DS.text3)
                         }
                     }
@@ -428,6 +448,9 @@ struct AIStudioView: View {
             }
         }
     }
+
+    /// Deletes one result: gone from the batch, the library, and the history, with its file in the Trash.
+    private func delete(_ a: MediaAsset) { ai.deleteResult(a, model: model) }
 
     /// Images fill the photo slot; clips and music go onto the open design, or a new TikTok-sized video design.
     private func useInStudio(_ a: MediaAsset) {
@@ -695,5 +718,25 @@ struct GenerateSection: View {
             done += 1
         }
         try? model.context.save()
+    }
+}
+
+/// A small trash button in the corner of a result, shown while the pointer is over it.
+private struct ResultDeleteButton: View {
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: "trash").font(.system(size: 12, weight: .semibold))
+                .frame(width: 28, height: 28)
+                .background(.regularMaterial, in: Circle())
+        }
+        .buttonStyle(.plain)
+        .padding(Space.sm)
+        .opacity(hovering ? 1 : 0.001)
+        .onHover { hovering = $0 }
+        .help("Delete")
+        .accessibilityLabel("Delete")
     }
 }

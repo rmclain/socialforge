@@ -26,6 +26,7 @@ struct StudioView: View {
                 }
                 .task(id: studio.revision &+ model.aiRevision &+ (model.brandKit?.colors.hashValue ?? 0) &+ Int(studio.time * 1000)) { await render() }
                 .onDisappear { studio.stop() }
+                .background { StudioDeleteKey(studio: studio) }
             } else {
                 StudioGallery()
             }
@@ -80,13 +81,28 @@ struct StudioView: View {
             }
             if let msg = studio.exportMessage ?? studio.busy {
                 HStack {
-                    if let p = studio.videoProgress {
+                    if let p = studio.videoProgress ?? studio.sizesProgress {
                         ProgressView(value: p).frame(width: 120)
-                    } else if studio.busy != nil { ProgressView().controlSize(.small) }
+                    } else if studio.busy != nil {
+                        ProgressView().controlSize(.small)
+                    } else if studio.lastSizes != nil {
+                        Image(systemName: "checkmark.circle.fill").foregroundStyle(DS.green)
+                    }
                     Text(msg).font(DS.small).foregroundStyle(DS.textBody)
                     Spacer()
                     if studio.videoProgress != nil { Button("Cancel") { studio.cancelVideoExport() }.buttonStyle(SecondaryButtonStyle()) }
-                    if studio.busy == nil { Button("Dismiss") { studio.exportMessage = nil }.buttonStyle(.plain).foregroundStyle(DS.text2) }
+                    if studio.busy == nil, let sizes = studio.lastSizes {
+                        Button("Show in Library") {
+                            model.mediaCollection = sizes.collection
+                            model.page = .media
+                        }
+                        .buttonStyle(SecondaryButtonStyle())
+                        if !sizes.files.isEmpty {
+                            Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(sizes.files) }
+                                .buttonStyle(SecondaryButtonStyle())
+                        }
+                    }
+                    if studio.busy == nil { Button("Dismiss") { studio.exportMessage = nil; studio.lastSizes = nil }.buttonStyle(.plain).foregroundStyle(DS.text2) }
                 }
                 .card(padding: Space.md)
                 .padding(.horizontal, Space.xxl)
@@ -116,10 +132,11 @@ struct StudioView: View {
         return Rectangle().fill(.clear).contentShape(Rectangle())
             .frame(width: layer.width * z, height: layer.height * z)
             .offset(x: layer.x * z, y: layer.y * z)  // grid: ok canvas coordinates
-            .onTapGesture { studio.selectedLayer = layer.id }
+            .onTapGesture { StudioDeleteKey.endTextEditing(); studio.selectedLayer = layer.id }
             .gesture(DragGesture(minimumDistance: 2)
                 .onChanged { g in
                     guard !layer.isLocked else { return }
+                    if dragStart[layer.id] == nil { StudioDeleteKey.endTextEditing() }
                     studio.selectedLayer = layer.id
                     let prev = dragStart[layer.id] ?? .zero
                     let now = CGPoint(x: g.translation.width / z, y: g.translation.height / z)
@@ -264,7 +281,7 @@ struct ToolBar: View {
                     Button(studio.templateID != nil ? "Save Template" : "Save Design") { studio.save(model: model) }
                     Button("Save as Brand Template…", action: saveAsTemplate)
                     Divider()
-                    Button("Close") { studio.document = nil }
+                    Button("Close") { studio.selectedLayer = nil; studio.selectedAudio = nil; studio.document = nil }
                 }
                 .menuStyle(.button).buttonStyle(SecondaryButtonStyle()).fixedSize()
                 .background { Button("") { studio.save(model: model) }.keyboardShortcut("s").opacity(0) }
@@ -362,7 +379,6 @@ struct LayersPanel: View {
         .background(DS.panel.opacity(0.94), in: RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous))
         .overlay(RoundedRectangle(cornerRadius: DS.radiusCard, style: .continuous).strokeBorder(DS.stroke))
         .shadow(color: .black.opacity(0.3), radius: 16, y: 8)
-        .onDeleteCommand { if let id = studio.selectedLayer { studio.delete(id) } }
     }
 
     private func icon(_ l: CreativeLayer) -> String {
@@ -463,7 +479,8 @@ struct StudioGallery: View {
                 LazyVGrid(columns: [GridItem(.adaptive(minimum: 180), spacing: Space.lg)], spacing: Space.lg) {
                     ForEach(allTemplates.filter { $0.workspaceID == model.workspaceID }) { t in TemplateTile(template: t, large: true) }
                 }
-                let designs = allDesigns.filter { $0.workspaceID == model.workspaceID }
+                let mine = allDesigns.filter { $0.workspaceID == model.workspaceID }
+                let designs = mine.filter { $0.sizeSet.isEmpty }
                 if !designs.isEmpty {
                     Text("Designs").font(.system(size: 15, weight: .semibold))
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 160), spacing: Space.lg)], spacing: Space.lg) {
@@ -481,6 +498,11 @@ struct StudioGallery: View {
                             }
                         }
                     }
+                }
+                // Generate all sizes: one row per set, in platform order, labeled by size.
+                let sets = Dictionary(grouping: mine.filter { !$0.sizeSet.isEmpty }, by: \.sizeSet)
+                ForEach(sets.keys.sorted(), id: \.self) { name in
+                    SizeSetRow(name: name, designs: sets[name] ?? [])
                 }
             }
             .padding(Space.xxl)
@@ -1065,26 +1087,147 @@ struct StudioInspector: View {
         }
     }
 
+    // The getters fall back to the value when the binding was made: SwiftUI can read a
+    // binding once more after its layer is deleted or the design is closed, and a
+    // force-unwrap there crashed the app (Close or Delete with a text layer selected).
+
     private func bind<T>(_ id: UUID, _ kp: WritableKeyPath<CreativeLayer, T>) -> Binding<T> {
-        Binding(get: { studio.document!.layers.first { $0.id == id }![keyPath: kp] },
-                set: { v in studio.changeLayer(id) { $0[keyPath: kp] = v } })
+        let initial = studio.document?.layers.first { $0.id == id }?[keyPath: kp]
+        return Binding(get: { studio.document?.layers.first { $0.id == id }?[keyPath: kp] ?? initial! },
+                       set: { v in studio.changeLayer(id) { $0[keyPath: kp] = v } })
     }
 
     private func textBind<T>(_ id: UUID, _ kp: WritableKeyPath<TextLayer, T>) -> Binding<T> {
-        Binding(get: {
-            guard case .text(let t) = studio.document!.layers.first(where: { $0.id == id })!.content else { fatalError("not text") }
+        func read() -> T? {
+            guard case .text(let t)? = studio.document?.layers.first(where: { $0.id == id })?.content else { return nil }
             return t[keyPath: kp]
-        }, set: { v in
+        }
+        let initial = read() ?? TextLayer(text: "", fontName: "Helvetica Neue", size: 12)[keyPath: kp]
+        return Binding(get: { read() ?? initial }, set: { v in
             studio.changeLayer(id) { l in if case .text(var t) = l.content { t[keyPath: kp] = v; l.content = .text(t) } }
         })
     }
 
     private func shapeBind<T>(_ id: UUID, _ kp: WritableKeyPath<ShapeLayer, T>) -> Binding<T> {
-        Binding(get: {
-            guard case .shape(let s) = studio.document!.layers.first(where: { $0.id == id })!.content else { fatalError("not a shape") }
-            return s[keyPath: kp]
-        }, set: { v in
-            studio.changeLayer(id) { l in if case .shape(var s) = l.content { s[keyPath: kp] = v; l.content = .shape(s) } }
+        func read() -> T? {
+            guard case .shape(let sh)? = studio.document?.layers.first(where: { $0.id == id })?.content else { return nil }
+            return sh[keyPath: kp]
+        }
+        let initial = read() ?? ShapeLayer(kind: .rectangle, fill: .white)[keyPath: kp]
+        return Binding(get: { read() ?? initial }, set: { v in
+            studio.changeLayer(id) { l in if case .shape(var sh) = l.content { sh[keyPath: kp] = v; l.content = .shape(sh) } }
         })
+    }
+}
+
+/// Delete and Forward Delete remove the selected layer or track while the Studio is open.
+///
+/// Canvas items are not focusable, so `.onDeleteCommand` only fired when the Layers
+/// panel had focus: clicking an element on the canvas and pressing Delete did nothing.
+/// The key passes through while text is being edited or a sheet is up.
+struct StudioDeleteKey: View {
+    let studio: StudioModel
+    @State private var monitor: Any?
+
+    var body: some View {
+        Color.clear
+            .onAppear {
+                guard monitor == nil else { return }
+                monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                    MainActor.assumeIsolated { Self.handle(event, studio: studio) } ? nil : event
+                }
+            }
+            .onDisappear {
+                if let monitor { NSEvent.removeMonitor(monitor) }
+                monitor = nil
+            }
+    }
+
+    /// A click on the canvas takes focus from a text field, as in other Mac editors.
+    /// Without this the search field or an inspector field kept focus and took the Delete key.
+    @MainActor
+    static func endTextEditing(in window: NSWindow? = NSApp.keyWindow) {
+        guard let window, window.firstResponder is NSText else { return }
+        window.makeFirstResponder(nil)
+    }
+
+    /// True when the event deleted something and should go no further.
+    @MainActor
+    static func handle(_ event: NSEvent, studio: StudioModel) -> Bool {
+        let deleteKeys: Set<UInt16> = [51, 117]  // Delete, Forward Delete
+        guard deleteKeys.contains(event.keyCode),
+              event.modifierFlags.intersection([.command, .option, .control, .shift]).isEmpty,
+              let window = event.window, window.attachedSheet == nil, !window.isSheet,
+              !(window.firstResponder is NSText),
+              studio.canDeleteSelection
+        else { return false }
+        studio.deleteSelection()
+        return true
+    }
+}
+
+/// The sizes Generate all sizes made from one design, side by side in platform order.
+struct SizeSetRow: View {
+    let name: String
+    let designs: [Design]
+    @Environment(AppModel.self) private var model
+
+    private var ordered: [(preset: CanvasPreset?, design: Design)] {
+        designs.map { d in (CanvasPreset.all.first { d.name.hasSuffix(" · \($0.name)") }, d) }
+            .sorted { a, b in
+                let i = a.preset.flatMap { p in CanvasPreset.all.firstIndex { $0.id == p.id } } ?? .max
+                let j = b.preset.flatMap { p in CanvasPreset.all.firstIndex { $0.id == p.id } } ?? .max
+                return i < j
+            }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.md) {
+            HStack(alignment: .firstTextBaseline, spacing: Space.sm) {
+                Text("Sizes · \(name)").font(.system(size: 15, weight: .semibold))
+                Text("\(designs.count) sizes").font(DS.small).foregroundStyle(DS.text2)
+                Spacer()
+                Button("Show in Library") {
+                    model.mediaCollection = "Sizes · \(name)"
+                    model.page = .media
+                }
+                .buttonStyle(LinkButtonStyle())
+            }
+            .contextMenu {
+                Button("Delete Set", role: .destructive) {
+                    for d in designs { model.context.delete(d) }
+                    try? model.context.save()
+                }
+                .help("Deletes these designs. The images stay in the Media Library.")
+            }
+            ScrollView(.horizontal) {
+                HStack(alignment: .bottom, spacing: Space.lg) {
+                    ForEach(ordered, id: \.design.id) { item in
+                        let d = item.design
+                        Button { if let doc = d.document { model.studio.open(doc, designID: d.uuid) } } label: {
+                            VStack(alignment: .leading, spacing: Space.xs) {
+                                DesignThumb(doc: d.document)
+                                    .frame(width: 160 * min(1, thumbRatio(item.preset)), height: 160 * min(1, 1 / thumbRatio(item.preset)))
+                                Text(item.preset?.name ?? d.name).font(DS.bodyMedium).lineLimit(1)
+                                Text(item.preset.map { "\($0.width) × \($0.height) · \($0.ratio)" } ?? "").font(DS.small).foregroundStyle(DS.text2)
+                            }
+                            .frame(width: 160, alignment: .leading)
+                        }
+                        .buttonStyle(.plain)
+                        .contextMenu {
+                            Button("Delete", role: .destructive) { model.context.delete(d); try? model.context.save() }
+                        }
+                    }
+                }
+                .padding(.bottom, Space.sm)
+            }
+        }
+        .card()
+    }
+
+    /// Width over height for the thumbnail box.
+    private func thumbRatio(_ p: CanvasPreset?) -> Double {
+        guard let p else { return 1 }
+        return Double(p.width) / Double(p.height)
     }
 }
