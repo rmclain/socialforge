@@ -45,7 +45,8 @@ else
     echo "Unzip, drag SocialForge.app to Applications, and open it. Copies that are already installed offer the update themselves."
   } > "$notes_file"
 fi
-gh release create "$tag" "$zip" --repo "$repo" --target "$(git rev-parse HEAD)" --title "SocialForge $version" --notes-file "$notes_file" "${draft[@]}"
+target=$(git rev-parse public 2>/dev/null || echo main)
+gh release create "$tag" "$zip" --repo "$repo" --target "$target" --title "SocialForge $version" --notes-file "$notes_file" "${draft[@]}"
 if [[ ${#draft[@]} -eq 0 ]]; then
   git tag -f "$tag" HEAD >/dev/null
   tools/publish-site.sh
