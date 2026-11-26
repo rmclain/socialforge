@@ -19,10 +19,10 @@ export class RetryLater extends Error {}
  */
 export async function processPublication (svc: Services, job: PublishJob, retryCount: number, signal?: AbortSignal): Promise<'published' | 'failed' | 'skipped'> {
   const { db } = svc
-  // Claim: only a scheduled (or retrying) post moves to publishing. Two workers cannot both claim it.
+  // Claim: only a scheduled post moves to publishing. Two workers cannot both claim it.
   const [pub] = await db.update(publications)
     .set({ status: 'publishing', attempts: sql`${publications.attempts} + 1`, updatedAt: new Date() })
-    .where(and(eq(publications.id, job.publicationId), sql`${publications.status} in ('scheduled', 'publishing')`))
+    .where(and(eq(publications.id, job.publicationId), eq(publications.status, 'scheduled')))
     .returning()
   if (!pub) return 'skipped'
 

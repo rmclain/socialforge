@@ -64,11 +64,25 @@ struct AppCommands: Commands {
                 .disabled(!AppUpdater.shared.isEnabled)
         }
         CommandGroup(replacing: .newItem) {
+            Button("New Post in Composer") {
+                model.page = .composer
+                model.composer.startNew(model: model)
+            }
+            .keyboardShortcut("n")
+            Button("New Design") {
+                model.page = .studio
+                model.studio.openNew(model: model)
+            }
+            .keyboardShortcut("d", modifiers: [.command, .shift])
+            Button("New Bulk Run") { model.page = .bulk }
+                .keyboardShortcut("b", modifiers: [.command, .shift])
+            Divider()
             Button("New Workspace…") { model.showNewWorkspace = true }
                 .keyboardShortcut("n", modifiers: [.command, .shift])
             Button("Import Media…") { model.page = .media; ImportPanel.run(model: model) }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
             Button("Save Sample CSV…") { SampleCSVPanel.run() }
+            Divider()
             Button("Import Brand Kit…") {
                 if let kit = BrandKitIO.importKit(model: model) {
                     if model.showWelcome { model.completeBrandImport(kit) } else { model.page = .brandKits }
@@ -81,26 +95,24 @@ struct AppCommands: Commands {
                 }
             }
             .disabled(model.brandKit == nil)
-            Button("New Bulk Run") { model.page = .bulk }
-                .keyboardShortcut("b", modifiers: [.command, .shift])
-            Button("New Design") {
-                model.page = .studio
-                model.studio.openNew(model: model)
-            }
-            Button("New Post in Composer") {
-                model.page = .composer
-                model.composer.startNew(model: model)
-            }
-            .keyboardShortcut("n")
-            .keyboardShortcut("d", modifiers: [.command, .shift])
         }
         CommandGroup(replacing: .undoRedo) {
-            Button("Undo") { model.studio.undo() }
-                .keyboardShortcut("z")
-                .disabled(model.page != .studio || !model.studio.canUndo)
-            Button("Redo") { model.studio.redo() }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
-                .disabled(model.page != .studio || !model.studio.canRedo)
+            Button("Undo") {
+                if model.page == .studio && model.studio.canUndo {
+                    model.studio.undo()
+                } else {
+                    NSApp.sendAction(Selector(("undo:")), to: nil, from: nil)
+                }
+            }
+            .keyboardShortcut("z")
+            Button("Redo") {
+                if model.page == .studio && model.studio.canRedo {
+                    model.studio.redo()
+                } else {
+                    NSApp.sendAction(Selector(("redo:")), to: nil, from: nil)
+                }
+            }
+            .keyboardShortcut("z", modifiers: [.command, .shift])
         }
         CommandGroup(after: .pasteboard) {
             // The plain Delete key works too while the Studio is open (StudioDeleteKey).
@@ -134,6 +146,8 @@ struct AppCommands: Commands {
             Button("Sync with Publishing Service") { Task { await model.sync(); await model.refreshAccounts() } }
                 .keyboardShortcut("r")
             Button("Check Publishing Service") { Task { await model.checkBackend() } }
+            Button("Connections") { model.page = .accounts }
+                .keyboardShortcut("k", modifiers: [.command, .shift])
         }
         CommandGroup(after: .sidebar) {
             Button(model.showSidebar ? "Hide Sidebar" : "Show Sidebar") { model.showSidebar.toggle() }
@@ -172,8 +186,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 /// Where the data lives: ~/Library/Application Support/SocialForge/SocialForge.store
 enum Store {
+    /// Non-nil when the store could not open cleanly and was backed up before recovery.
+    @MainActor static var recoveryNotice: String?
+
     /// True when APP_STORE points somewhere else (tests, snapshots, seed data).
-    static var isOverridden: Bool {
+    nonisolated static var isOverridden: Bool {
         !(ProcessInfo.processInfo.environment["APP_STORE"] ?? "").isEmpty
     }
 
@@ -182,7 +199,7 @@ enum Store {
             return URL(fileURLWithPath: path)
         }
         let dir = URL.applicationSupportDirectory.appending(path: "SocialForge", directoryHint: .isDirectory)
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         return dir.appending(path: "SocialForge.store")
     }
 
@@ -192,11 +209,45 @@ enum Store {
         return url.deletingLastPathComponent().appending(path: "Agent Inbox", directoryHint: .isDirectory)
     }
 
-    static func makeContainer() -> ModelContainer {
+    /// Creates a backup copy of the SQLite store + WAL/SHM files without deleting user data.
+    static func backupStore(at storeURL: URL, label: String) -> URL? {
+        let fm = FileManager.default
+        guard fm.fileExists(atPath: storeURL.path) else { return nil }
+        let stamp = ISO8601.format(.now).replacingOccurrences(of: ":", with: "-")
+        let backupDir = storeURL.deletingLastPathComponent().appending(path: "Backups/\(label)-\(stamp)", directoryHint: .isDirectory)
         do {
-            return try ModelContainer(for: SwiftData.Schema(AppSchema.models), configurations: ModelConfiguration(url: url))
+            try fm.createDirectory(at: backupDir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+            for suffix in ["", "-wal", "-shm"] {
+                let src = URL(fileURLWithPath: storeURL.path + suffix)
+                if fm.fileExists(atPath: src.path) {
+                    let dst = backupDir.appending(path: src.lastPathComponent)
+                    try fm.copyItem(at: src, to: dst)
+                }
+            }
+            return backupDir
         } catch {
-            fatalError("Could not open the database at \(url.path): \(error)")
+            return nil
+        }
+    }
+
+    @MainActor
+    static func makeContainer() -> ModelContainer {
+        let schema = SwiftData.Schema(AppSchema.models)
+        let config = ModelConfiguration(url: url)
+        do {
+            return try ModelContainer(for: schema, configurations: config)
+        } catch {
+            // Preserve the original store in Backups/ rather than deleting user data.
+            let backup = backupStore(at: url, label: "migration-recovery")
+            let msg = "SocialForge could not open the existing database at \(url.path) (\(error.localizedDescription)). "
+                + (backup.map { "A full backup was saved to \($0.path). " } ?? "")
+                + "A safe temporary in-memory library was opened so your files on disk remain untouched."
+            recoveryNotice = msg
+            fputs("SocialForge store error: \(msg)\n", stderr)
+            if let fallback = try? ModelContainer(for: schema, configurations: ModelConfiguration(isStoredInMemoryOnly: true)) {
+                return fallback
+            }
+            fatalError(msg)
         }
     }
 }
@@ -225,7 +276,12 @@ enum SampleCSVPanel {
         panel.allowedContentTypes = [.commaSeparatedText]
         panel.message = "One row per image: filename matches the image's file name, url is where its post links. Title, description, and alt text are optional."
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? SampleCSV.text.write(to: url, atomically: true, encoding: .utf8)
-        NSWorkspace.shared.activateFileViewerSelecting([url])
+        do {
+            try SampleCSV.text.write(to: url, atomically: true, encoding: .utf8)
+            NSWorkspace.shared.activateFileViewerSelecting([url])
+        } catch {
+            let alert = NSAlert(error: error)
+            alert.runModal()
+        }
     }
 }

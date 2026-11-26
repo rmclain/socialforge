@@ -46,7 +46,12 @@ struct AgentMCPTests {
         var s = session()
         let tools = try #require(try object(s.handle(#"{"jsonrpc":"2.0","id":2,"method":"tools/list"}"#))["result"]?.objectValue?["tools"]?.arrayValue)
         let names = tools.compactMap { $0.objectValue?["name"]?.stringValue }
-        #expect(Set(names) == ["list_brands", "list_accounts", "list_media", "list_posts", "import_media", "create_posts", "update_media", "get_request_status"])
+        #expect(Set(names) == [
+            "list_brands", "list_accounts", "list_media", "list_posts",
+            "list_campaigns", "list_templates", "list_platforms", "list_boards",
+            "inspect_account_capabilities", "validate_posts", "inspect_schedule_availability", "search_media",
+            "import_media", "create_posts", "create_campaign_draft", "update_media", "get_request_status",
+        ])
         #expect(tools.allSatisfy { $0.objectValue?["inputSchema"]?.objectValue?["type"] == .string("object") })
     }
 
@@ -70,7 +75,7 @@ struct AgentMCPTests {
     }
 
     @Test func onlyChangesAreQueued() {
-        #expect(Set(AgentTools.all.filter(\.queued).map(\.name)) == ["import_media", "create_posts", "update_media"])
+        #expect(Set(AgentTools.all.filter(\.queued).map(\.name)) == ["import_media", "create_posts", "create_campaign_draft", "update_media"])
         #expect(!AgentTools.all.contains { $0.name.contains("approve") || $0.name.contains("publish") })
     }
 
@@ -150,5 +155,75 @@ struct AgentMCPTests {
         try FileManager.default.createDirectory(at: inbox.pendingDir, withIntermediateDirectories: true)
         try Data("nope".utf8).write(to: inbox.pendingDir.appending(path: "junk.json"))
         #expect(inbox.pending().isEmpty && inbox.pendingCount == 0)
+        // Corrupt file is quarantined rather than silently lost.
+        let quarantined = (try? FileManager.default.contentsOfDirectory(atPath: inbox.quarantineDir.path)) ?? []
+        #expect(quarantined.count == 1)
+    }
+
+    @Test func inboxDeduplicatesAlreadyDoneRequests() throws {
+        let root = FileManager.default.temporaryDirectory.appending(path: "inbox-dedup-\(UUID().uuidString)")
+        defer { try? FileManager.default.removeItem(at: root) }
+        let inbox = AgentInbox(root: root)
+        let req = AgentRequest(tool: "import_media", args: ["paths": .array([.string("/tmp")])], client: "Claude Code")
+        try inbox.enqueue(req)
+        try inbox.finish(AgentResult(request: req, ok: true, message: "done"))
+        // Simulate crash where Pending/<id>.json reappears or wasn't removed after Done/<id>.json was written.
+        try inbox.enqueue(req)
+        #expect(inbox.pending().isEmpty)
+        #expect(!inbox.isPending(req.id))
+    }
+
+    @Test func agentToolsRejectSymlinksDirectoriesAndBadURLs() throws {
+        let dir = FileManager.default.temporaryDirectory.appending(path: "sf-sec-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let real = dir.appending(path: "a.jpg")
+        try Data([1, 2, 3]).write(to: real)
+        let link = dir.appending(path: "link.jpg")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        let later = AgentTools.iso(.now.addingTimeInterval(3600))
+
+        #expect(AgentTools.problem(tool: "import_media", args: ["paths": .array([.string(link.path)])])?.contains("Symbolic") == true)
+        #expect(AgentTools.problem(tool: "create_posts", args: ["posts": .array([
+            .object(["account_id": .string("acc"), "file": .string(dir.path), "scheduled_at": .string(later)])
+        ])])?.contains("directory") == true)
+        #expect(AgentTools.problem(tool: "create_posts", args: ["posts": .array([
+            .object(["account_id": .string("acc"), "media_id": .string(UUID().uuidString), "link": .string("javascript:alert(1)"), "scheduled_at": .string(later)])
+        ])])?.contains("https://") == true)
+    }
+
+    @Test func outboundMCPClientDiscoveryAllowanceAndPathRestriction() async throws {
+        let stub = HTTPStub.make { _, body in
+            let obj = jsonObject(body)
+            let method = obj["method"] as? String ?? ""
+            if method == "initialize" {
+                return (200, json(#"{"jsonrpc":"2.0","id":1,"result":{"serverInfo":{"name":"ArtCraft","version":"2.1"}}}"#))
+            } else if method == "tools/list" {
+                return (200, json(#"{"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"render_poster","description":"Make poster"},{"name":"shell_exec","description":"Danger"}]}}"#))
+            } else {
+                return (200, json(#"{"jsonrpc":"2.0","id":2,"result":{"content":[{"type":"text","text":"Rendered poster"}],"isError":false}}"#))
+            }
+        }
+        let server = OutboundMCPServer(
+            name: "ArtCraft", transport: .http,
+            endpointURL: stub.base.absoluteString.replacingOccurrences(of: "http://", with: "https://"),
+            allowedTools: ["render_poster"], restrictedRootPath: "/tmp/sf-allowed"
+        )
+        let client = OutboundMCPClient(server: server, bearerToken: "tok", session: stub.session)
+        let (info, tools) = try await client.discoverTools()
+        #expect(info == "ArtCraft 2.1")
+        #expect(tools.map(\.name) == ["render_poster", "shell_exec"])
+
+        // Disallowed tool is blocked.
+        await #expect(throws: OutboundMCPError.toolNotAllowed("shell_exec")) {
+            _ = try await client.callTool(name: "shell_exec", arguments: [:])
+        }
+        // Path outside restricted workspace root is blocked.
+        await #expect(throws: OutboundMCPError.pathOutsideWorkspace("/etc/passwd")) {
+            _ = try await client.callTool(name: "render_poster", arguments: ["path": .string("/etc/passwd")])
+        }
+        // Allowed tool with path inside root succeeds and is tagged untrusted.
+        let res = try await client.callTool(name: "render_poster", arguments: ["path": .string("/tmp/sf-allowed/a.png")])
+        #expect(res.untrusted && !res.isError && res.text == "Rendered poster")
     }
 }

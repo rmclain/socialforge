@@ -1,79 +1,50 @@
-# Test report: 2026-11-19
+# Test Report
 
-## Second session (design pass and feature round)
+## 2026-11-26 — Production Readiness, Unified Connections & Multi-Platform Pass
 
-| Check | Result |
-|---|---|
-| `swift test` | **101 passed** (Kit: brand templates, smart resize, schedules by hours and picked dates, image ops, AI providers and copy with stubbed HTTP, ComfyUI client and workflows, analytics, UTM, command plans) |
-| `tools/selftest.sh` | **42/42**: adds built-in templates, brand-bound colors restyling a design, Save as template and save in place, applying a template to 3 images, smart resize, analytics counts, assistant time parsing |
-| `tools/grid-lint.sh` | PASS |
-| Layout probes | 36/36 PASS |
-| Snapshots | 36 PNGs reviewed against WebKit renders of the six design views (`design/SocialForge v2.dc.html`): dashboard, calendar, composer (canvas → Creative Studio), media, AI studio, bulk |
+All checks below were executed on the build Mac (`arm64e-apple-macos`, Swift 6.2/6.4.2, Node.js, Homebrew PostgreSQL) after the final edits.
 
-Not verified live: AI providers, ComfyUI, and Pinterest (no keys or servers on the build Mac).
-
-## First session
-
-All results below are from runs on the build Mac (macOS 27.0.1, Swift 6.4.2,
-Node 26.13, PostgreSQL 14.24 from Homebrew).
-
-## Mac app
+### Mac App (`apps/mac`)
 
 | Check | Command | Result |
 |---|---|---|
-| Build | `apps/mac/build.sh` | Built, signed (Apple Development), installed; no warnings |
-| Unit tests (Swift Testing) | `swift test` | **51 passed**, 11 suites |
-| In-app self-test | `tools/selftest.sh` | **33/33 passed**, twice in a row |
-| Self-test against the optional service | `APP_BACKEND_URL=… tools/selftest.sh` (earlier build) | 27/27 passed: activated 30, re-activating sent 0, sync consistent |
-| Grid lint | `tools/grid-lint.sh` | PASS |
-| Layout probes | `swift tools/check-layout.swift /tmp/SocialForge-shots/*-layout.json` | 36/36 PASS |
-| Snapshots | `tools/snap.sh` | 36 PNGs (13 pages and 5 Settings tabs, light and dark), reviewed |
+| Swift Unit Tests (`SocialForgeKitTests`) | `cd apps/mac && swift test --scratch-path /tmp/socialforge-test-build` | **197 passed in 33 suites** (1.171 s; 2 live-only suites skipped) |
+| Grid Layout Lint | `cd apps/mac && ./tools/grid-lint.sh` | **PASS** (0 off-grid lines) |
+| Release Build & Sign | `cd apps/mac && ./build.sh` | **PASS** (53.76 s; `~/Applications/SocialForge.app` signed with Apple Development) |
+| In-App E2E Self-Test | `cd apps/mac && ./tools/selftest.sh` | **SELFTEST PASS 89 checks** |
+| UI Snapshots | `cd apps/mac && ./tools/snap.sh` | **38/38 PNGs captured** (13 pages + 6 Settings tabs, light and dark) |
+| Layout Probes | `cd apps/mac && swift tools/check-layout.swift /tmp/SocialForge-shots/*-layout.json` | **38/38 PASS** (`home-dark` & `home-light`: 4 probes in 1 area) |
+| Platform Spec Sync | `python3 tools/gen-spec.py` | **PASS** |
+| Secret Scan | `git diff` secret regex check | **CLEAN** |
 
-What the unit tests cover: sidebar pages; CSV parsing (quotes, newlines, BOM,
-short rows, unterminated quotes); matching by filename, SKU, asset id, and row
-order, with ambiguous matches in both directions; schedules (30 daily at 9:00,
-New York fall-back and spring-forward, a nonexistent 2:30 AM, weekdays only,
-skip days, several per day, every other day, appending after a queue);
-platform registry drift against `spec/platforms`; text, link, board, format,
-size, and aspect validation; duplicate warnings; account capabilities
-(scenario E); sync merge (scenario D); media scan, import, hashing, and
-duplicates with originals unchanged; first-in-folder-order wins (5 runs);
-Fill and Fit layout without stretching; Pinterest variants at exactly
-1000 × 1500 with EXIF removed (scenario C); design JSON round trip, template
-variables, rendering with real text, missing fonts blocking export; publish
-engine backoff, status classification, success, retries up to the limit,
-reconciliation after an uncertain timeout (one Pin, not two), auth expiry,
-permanent failure; Pinterest authorize URL.
+**What the new unit tests cover** (in addition to all earlier suites):
+- Unified connections lifecycle, RFC 7636 PKCE (`S256`), single-flight `TokenLifecycleManager` concurrent refresh deduplication, and `DiagnosticRedactor.sanitize` secret scrubbing.
+- Official HTTP-stubbed platform adapters: Pinterest (refresh token, Video Pins, paginated board sections), Meta (Facebook Pages text/photo/Reel, Instagram photo+S3 cleanup & Reel, Threads text/media, strict `OAuthRedirect` state/URI checks, strict `MetaReconcile` rejecting empty/duplicate captions), LinkedIn (member/org image post), X (v2 chunked media upload + weighted character length), TikTok (`queryCreatorInfo` + Inbox upload), YouTube (resumable upload), and S3/R2 full round-trip `verifyConnection()`.
+- AI providers (`discoverAIModels`, 401 vs 403, HTTPS transport enforcement, redaction), ComfyUI (`validateWorkflow`, job-scoped cancellation that preserves other running jobs, `LoadImage`), and Outbound/Inbound MCP (tool allow-list, workspace path restrictions, symlink/special-file rejection, JSON-RPC `-32600`).
 
-What the self-test covers (the app's real code on a /tmp store): workspace
-creation; importing 30 images and a CSV (one duplicate skipped, originals
-unchanged); 5 Pinterest variants; all 30 matched to rows; 30 posts at 9:00 New
-York time, one per day, with CSV links and variants; validation (a 120-character
-title, a missing `pins:write`); approval; rescheduling; Studio undo and PNG
-export into the library. On-Mac publishing (scenario A, locally): 6 due posts
-published by the app, each exactly once, with attempts recorded, and a second
-pass publishing nothing. The background publisher: the agent
-(`SocialForge --publish-agent --once`) stands by while the app holds the lock,
-then publishes the 4 due posts once the lock is free (10 Pins, no duplicates).
+**What the 89-check in-app self-test covers** (on an isolated `/tmp` SwiftData store):
+- All original workflows (workspaces, 30-image + CSV import with duplicate handling, originals preserved, Pinterest variants, validation, approval, rescheduling, Studio undo/export/templates/brand restyle/smart resize/size sets, calendar double-click, analytics, welcome sheet, brand folder routing, media deletion protection, Inbound MCP queue & apply, on-Mac publishing Scenario A + background `--publish-agent` lock handoff).
+- New Scenario D/E/H/I checks: editing an approved post invalidates approval back to Needs Review; manual reconciliation confirms `.outcomeUnknown` as published; Inbound MCP crash-recovery replay creates zero duplicate posts; automation blocks watching SocialForge's managed library folder; 5 isolated brand workspaces have zero cross-workspace post leakage.
 
-## Optional publishing service
+### Optional Publishing Service (`services/api`)
 
 | Check | Command | Result |
 |---|---|---|
-| Typecheck | `npm run typecheck` (TypeScript 7) | Clean |
-| API and worker tests | `npm test` (throwaway Postgres cluster per run) | **21 passed** |
-| Live run | `npm run dev:local` | `/health` 200 `{"status":"ok","db":"ok"}`, `/version` 200, `/v1/accounts` without a token 401; stopped afterwards with its Postgres |
-| Log redaction | grep the run log | No `Authorization` header or bearer token logged |
+| TypeScript Typecheck | `cd services/api && npm run typecheck` | **PASS** (0 errors) |
+| API & Worker Integration Tests | `cd services/api && npm test` | **23/23 passed in 3 suites** (41.8 s, throwaway Postgres cluster) |
 
-The worker tests cover: scenario A (30 Pins, each published once, results
-synced back), not publishing early, 503 retry then success, reconciliation
-after a timeout, permanent failure, giving up after the retry limit, a canceled
-post never publishing, and a 401 marking the account expired and refusing new
-posts.
+New API tests verify `GET /v1/capabilities` + security headers, 404 (not 500) on non-UUID publication IDs, session token expiry/malformed rejection, and cross-workspace tenant isolation.
 
-## Not verified
+### Not Verified Live
 
-- **Pinterest live API**: no Pinterest app credentials, so no real Pin was created. Mock only.
-- **Registering the launch agent with SMAppService**: not done on the build Mac, because it changes your Login Items and needs your approval. The agent mode itself is tested directly.
-- **Docker Compose**: removed at your request; never run.
-- Snapshots used the fallback capture (no Screen Recording permission), which leaves sidebars and grouped-form backgrounds blank.
+- **Live social platform APIs (all 8 platforms)**: Tested with stubbed HTTP only; no real provider credentials or live posts were executed.
+- **Live AI providers, ComfyUI, and S3/R2 storage**: Tested with stubbed HTTP only.
+- **`SMAppService` Login Items registration**: Launch agent binary mode (`--publish-agent --once`) and lock handoff are verified in `selftest.sh`; System Settings Login Items registration requires interactive approval.
+- **Developer ID notarization**: Requires a Developer ID Application certificate and `NOTARY_PROFILE`.
+
+---
+
+## Earlier History (2026-11-19 Baseline)
+
+- **Second session**: `swift test` 101 passed, `selftest.sh` 42/42 passed, `grid-lint.sh` PASS, 36/36 layout probes PASS.
+- **First session**: `swift test` 51 passed (11 suites), `selftest.sh` 33/33 passed, `services/api` 21/21 passed.

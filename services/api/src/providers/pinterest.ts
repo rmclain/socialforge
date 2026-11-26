@@ -26,7 +26,7 @@ export class PinterestProvider implements SocialProvider {
         method,
         headers: { Authorization: `Bearer ${account.accessToken}`, 'Content-Type': 'application/json' },
         body: body === undefined ? undefined : JSON.stringify(body),
-        signal: signal ?? AbortSignal.timeout(30_000),
+        signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(30_000)]) : AbortSignal.timeout(30_000),
       })
     } catch (err) {
       // A timeout after sending may have created the Pin: reconcile before retrying.
@@ -50,6 +50,10 @@ export class PinterestProvider implements SocialProvider {
 
   async publish (req: PublishRequest): Promise<PublishResult> {
     if (!req.image) throw new ProviderError('permanent', 'A Pin needs an image.')
+    const mime = req.image.contentType.split(';')[0].trim().toLowerCase()
+    if (mime !== 'image/jpeg' && mime !== 'image/jpg' && mime !== 'image/png') {
+      throw new ProviderError('permanent', `Pinterest base64 Pin upload requires JPEG or PNG (received ${mime}).`)
+    }
     const body = {
       board_id: req.payload.boardId,
       title: req.payload.title || undefined,
@@ -60,7 +64,7 @@ export class PinterestProvider implements SocialProvider {
       note: `sf:${req.idempotencyKey}`,
       media_source: {
         source_type: 'image_base64',
-        content_type: req.image.contentType === 'image/png' ? 'image/png' : 'image/jpeg',
+        content_type: mime === 'image/png' ? 'image/png' : 'image/jpeg',
         data: req.image.bytes.toString('base64'),
       },
     }
@@ -70,10 +74,17 @@ export class PinterestProvider implements SocialProvider {
 
   async findExisting (req: PublishRequest, since: Date): Promise<PublishResult | null> {
     if (!req.payload.boardId) return null
-    const { data } = await this.call<{ items: { id: string, note?: string, created_at?: string }[] }>(
-      req.account, 'GET', `/boards/${encodeURIComponent(req.payload.boardId)}/pins?page_size=50`)
-    const hit = data.items.find((p) => p.note === `sf:${req.idempotencyKey}` && (!p.created_at || new Date(p.created_at) >= new Date(since.getTime() - 60_000)))
-    return hit ? { providerPostId: hit.id, url: `https://www.pinterest.com/pin/${hit.id}/` } : null
+    let bookmark: string | undefined
+    for (let page = 0; page < 5; page++) {
+      const q = `/boards/${encodeURIComponent(req.payload.boardId)}/pins?page_size=50${bookmark ? `&bookmark=${encodeURIComponent(bookmark)}` : ''}`
+      const { data } = await this.call<{ items: { id: string, note?: string, created_at?: string }[], bookmark?: string | null }>(
+        req.account, 'GET', q)
+      const hit = data.items.find((p) => p.note === `sf:${req.idempotencyKey}` && (!p.created_at || new Date(p.created_at) >= new Date(since.getTime() - 60_000)))
+      if (hit) return { providerPostId: hit.id, url: `https://www.pinterest.com/pin/${hit.id}/` }
+      bookmark = data.bookmark ?? undefined
+      if (!bookmark) break
+    }
+    return null
   }
 
   async listBoards (account: ProviderAccount): Promise<Board[]> {

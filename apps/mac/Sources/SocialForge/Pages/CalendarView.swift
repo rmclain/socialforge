@@ -11,9 +11,31 @@ struct CalendarView: View {
     @State private var platformFilter: String?
     @State private var statusFilter: PublicationStatus?
     @State private var campaignFilter: UUID?
+    @State private var accountFilter: String?
+    @State private var queueTab: QueueTab = .all
     @State private var didJump = false
 
     enum Mode: String, CaseIterable { case month = "Month", week = "Week", day = "Day", queue = "Queue" }
+    enum QueueTab: String, CaseIterable, Identifiable {
+        case all = "All", needsReview = "Needs Review", approved = "Ready", scheduled = "Scheduled",
+             processing = "Processing", failed = "Failed", authRequired = "Auth Required",
+             outcomeUnknown = "Unknown", published = "Published", manual = "Manual"
+        var id: String { rawValue }
+        func matches(_ s: PublicationStatus) -> Bool {
+            switch self {
+            case .all: true
+            case .needsReview: s == .needsReview || s == .draft
+            case .approved: s == .approved
+            case .scheduled: s == .scheduled || s == .retryScheduled
+            case .processing: [.preparing, .uploading, .awaitingProcessing, .publishing, .verifying].contains(s)
+            case .failed: s == .failed || s == .actionRequired
+            case .authRequired: s == .authRequired
+            case .outcomeUnknown: s == .outcomeUnknown
+            case .published: s == .published
+            case .manual: s == .manualRequired
+            }
+        }
+    }
 
     private var cal: Calendar { Calendar.current }
     private var mine: [Publication] { allPubs.filter { $0.workspaceID == model.workspaceID && $0.status != .canceled } }
@@ -22,6 +44,7 @@ struct CalendarView: View {
             (platformFilter == nil || p.platform == platformFilter)
                 && (statusFilter == nil || p.status == statusFilter)
                 && (campaignFilter == nil || p.campaignID == campaignFilter)
+                && (accountFilter == nil || p.accountID == accountFilter)
         }
     }
 
@@ -43,6 +66,12 @@ struct CalendarView: View {
             if let selected = mine.first(where: { model.publicationSelection.contains($0.id) }) { anchor = selected.scheduledAt }
             else if let next = mine.first(where: { $0.scheduledAt >= .now }) ?? mine.last { anchor = next.scheduledAt }
         }
+        .onChange(of: model.publicationSelection) {
+            if let selected = mine.first(where: { model.publicationSelection.contains($0.id) }),
+               !cal.isDate(selected.scheduledAt, equalTo: anchor, toGranularity: .month) {
+                anchor = selected.scheduledAt
+            }
+        }
     }
 
     private var header: some View {
@@ -55,7 +84,7 @@ struct CalendarView: View {
             Button("Next", systemImage: "chevron.right") { step(1) }.labelStyle(.iconOnly).buttonStyle(IconButtonStyle())
             Button("Today") { anchor = .now }.buttonStyle(SecondaryButtonStyle())
             Spacer()
-            ForEach(["pinterest", "instagram", "facebook", "threads", "x", "linkedin"], id: \.self) { p in
+            ForEach(ComposerModel.supportedPlatforms, id: \.self) { p in
                 let n = mine.filter { $0.platform == p }.count
                 if n > 0 || p == "pinterest" {
                     Button { platformFilter = platformFilter == p ? nil : p } label: {
@@ -71,12 +100,22 @@ struct CalendarView: View {
                     Text("All statuses").tag(PublicationStatus?.none)
                     ForEach(PublicationStatus.allCases, id: \.self) { Text($0.title).tag(PublicationStatus?.some($0)) }
                 }
+                Picker("Account", selection: $accountFilter) {
+                    Text("All accounts").tag(String?.none)
+                    ForEach(model.accounts) { a in Text("\(a.name) (\(a.platform))").tag(String?.some(a.serverID)) }
+                }
                 Picker("Campaign", selection: $campaignFilter) {
                     Text("All campaigns").tag(UUID?.none)
                     ForEach(allCampaigns.filter { $0.workspaceID == model.workspaceID }) { Text($0.name).tag(UUID?.some($0.uuid)) }
                 }
-            } label: { Image(systemName: statusFilter == nil && campaignFilter == nil ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") }
-            .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden).fixedSize().help("Filter by status or campaign")
+                if platformFilter != nil || statusFilter != nil || campaignFilter != nil || accountFilter != nil {
+                    Divider()
+                    Button("Clear Filters") {
+                        platformFilter = nil; statusFilter = nil; campaignFilter = nil; accountFilter = nil
+                    }
+                }
+            } label: { Image(systemName: statusFilter == nil && campaignFilter == nil && accountFilter == nil ? "line.3.horizontal.decrease" : "line.3.horizontal.decrease.circle.fill") }
+            .menuStyle(.button).buttonStyle(IconButtonStyle()).menuIndicator(.hidden).fixedSize().help("Filter by status, account, or campaign")
             PillPicker(options: Mode.allCases, selection: $mode) { $0.rawValue }
         }
     }
@@ -104,7 +143,9 @@ struct CalendarView: View {
     private var monthDays: [Date] {
         guard let month = cal.dateInterval(of: .month, for: anchor) else { return [] }
         let first = startOfWeek(month.start)
-        let weeks = Int(ceil((month.end.timeIntervalSince(first) / 86_400) / 7))
+        // DST-safe day count (avoids off-by-one week on 25-hour fall-back months).
+        let dayCount = cal.dateComponents([.day], from: first, to: month.end).day ?? 35
+        let weeks = max(4, (dayCount + 6) / 7)
         return (0..<(weeks * 7)).compactMap { cal.date(byAdding: .day, value: $0, to: first) }
     }
 
@@ -184,17 +225,60 @@ struct CalendarView: View {
     // MARK: Queue
 
     private var queue: some View {
-        ScrollView {
-            LazyVStack(spacing: 0) {
-                ForEach(pubs) { p in
-                    QueueRow(thumb: model.asset(p.assetID)?.storedPath, title: p.title, link: p.link, when: p.scheduledAt, platforms: [p.platform],
-                             status: p.status, issues: p.status.isLocal ? p.issues(model: model).filter { $0.level == .error }.count : 0,
-                             selected: model.publicationSelection.contains(p.id))
-                        .contentShape(Rectangle())
-                        .onTapGesture { CalendarSelect.click(p, model: model) }
-                        .contextMenu { PublicationMenu(ids: model.publicationSelection.contains(p.id) ? model.publicationSelection : [p.id]) }
-                        .draggable(p.uuid.uuidString)
-                    Divider().overlay(DS.stroke)
+        let filtered = pubs.filter { queueTab.matches($0.status) }
+        let reviewable = filtered.filter { $0.status == .needsReview && !$0.hasErrors(model: model) }
+        let approvedReady = filtered.filter { $0.status == .approved }
+        let retryable = filtered.filter { [.failed, .authRequired, .actionRequired].contains($0.status) }
+        return VStack(alignment: .leading, spacing: Space.md) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: Space.xs) {
+                    ForEach(QueueTab.allCases) { tab in
+                        let count = pubs.count { tab.matches($0.status) }
+                        if tab == .all || count > 0 || queueTab == tab {
+                            Chip(text: count > 0 ? "\(tab.rawValue) · \(count)" : tab.rawValue, selected: queueTab == tab) {
+                                queueTab = tab
+                            }
+                        }
+                    }
+                }
+            }
+            if !reviewable.isEmpty || !approvedReady.isEmpty || !retryable.isEmpty {
+                HStack(spacing: Space.sm) {
+                    if !reviewable.isEmpty {
+                        Button("Approve Ready (\(reviewable.count))") {
+                            for p in reviewable { p.status = .approved }
+                            try? model.context.save()
+                        }.buttonStyle(SecondaryButtonStyle())
+                    }
+                    if !approvedReady.isEmpty {
+                        Button("Schedule Approved (\(approvedReady.count))") {
+                            Task { _ = await model.activate(approvedReady) }
+                        }.buttonStyle(PrimaryButtonStyle())
+                    }
+                    if !retryable.isEmpty {
+                        Button("Retry Failed (\(retryable.count))") {
+                            for p in retryable { model.retryPublication(p) }
+                        }.buttonStyle(SecondaryButtonStyle())
+                    }
+                    Spacer()
+                }
+            }
+            if filtered.isEmpty {
+                EmptyState(symbol: "tray", title: "No posts in \(queueTab.rawValue)", message: "Change the queue filter or create posts from Composer or Bulk Publisher.")
+            } else {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(filtered) { p in
+                            QueueRow(thumb: model.asset(p.assetID)?.storedPath, title: p.title, link: p.link, when: p.scheduledAt, platforms: [p.platform],
+                                     status: p.status, issues: p.status.isLocal ? p.issues(model: model).filter { $0.level == .error }.count : 0,
+                                     selected: model.publicationSelection.contains(p.id))
+                                .contentShape(Rectangle())
+                                .onTapGesture { CalendarSelect.click(p, model: model) }
+                                .contextMenu { PublicationMenu(ids: model.publicationSelection.contains(p.id) ? model.publicationSelection : [p.id]) }
+                                .draggable(p.uuid.uuidString)
+                            Divider().overlay(DS.stroke)
+                        }
+                    }
                 }
             }
         }
@@ -232,6 +316,7 @@ struct DayTile: View {
     let inMonth: Bool
     @Environment(AppModel.self) private var model
     @State private var targeted = false
+    @State private var showAll = false
     private var cal: Calendar { Calendar.current }
 
     var body: some View {
@@ -242,7 +327,33 @@ struct DayTile: View {
                     .font(.system(size: 12, weight: cal.isDateInToday(day) ? .bold : .medium))
                     .foregroundStyle(selected || cal.isDateInToday(day) ? DS.accent : inMonth ? DS.text : DS.text3)
                 Spacer()
-                if posts.count > 1 { Text("+\(posts.count - 1)").font(DS.caption).foregroundStyle(DS.text2) }
+                if posts.count > 1 {
+                    Button("+\(posts.count - 1)") { showAll = true }
+                        .buttonStyle(.plain)
+                        .font(DS.caption).foregroundStyle(DS.accent)
+                        .popover(isPresented: $showAll, arrowEdge: .bottom) {
+                            VStack(alignment: .leading, spacing: Space.sm) {
+                                Text(day.formatted(.dateTime.weekday(.wide).month(.abbreviated).day())).font(DS.bodyMedium)
+                                ForEach(posts) { p in
+                                    Button {
+                                        model.publicationSelection = [p.id]
+                                        showAll = false
+                                    } label: {
+                                        HStack(spacing: Space.sm) {
+                                            PlatformBadge(platform: p.platform, size: 16)
+                                            Text(p.scheduledAt.formatted(date: .omitted, time: .shortened)).font(DS.caption).foregroundStyle(DS.text2)
+                                            Text(p.title.isEmpty ? "Untitled" : p.title).font(DS.body).lineLimit(1)
+                                            Spacer()
+                                            StatusChip(status: p.status)
+                                        }
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
+                            .padding(Space.md)
+                            .frame(width: 320)
+                        }
+                }
             }
             if let p = posts.first {
                 GeometryReader { g in PostCard(pub: p, height: g.size.height).frame(width: g.size.width) }
@@ -304,19 +415,28 @@ struct PostCard: View {
 }
 
 enum CalendarDrop {
-    /// Drag a post onto another day: same time of day, new date. Only posts not yet live.
+    /// Drag a post onto another day: same time of day, new date. Blocks past dates and remotely-owned posts cleanly.
     @MainActor
     @discardableResult
     static func move(_ ids: [String], to day: Date, model: AppModel) -> Bool {
         let all = (try? model.context.fetch(FetchDescriptor<Publication>())) ?? []
         var moved = false
         for id in ids {
-            guard let uuid = UUID(uuidString: id), let p = all.first(where: { $0.uuid == uuid }), p.status.isLocal || p.status == .paused else { continue }
+            guard let uuid = UUID(uuidString: id), let p = all.first(where: { $0.uuid == uuid }) else { continue }
+            if p.publishOwner == .service && p.status == .scheduled {
+                model.lastError = "“\(p.title)” is owned by the remote publishing service. Transfer ownership to This Mac or cancel it before rescheduling."
+                continue
+            }
+            guard p.status.isLocal || p.status == .paused || p.status == .scheduled else { continue }
             var tz = Calendar(identifier: .gregorian)
             tz.timeZone = TimeZone(identifier: p.timeZoneID) ?? .current
             let t = tz.dateComponents([.hour, .minute], from: p.scheduledAt)
             let d = Calendar.current.dateComponents([.year, .month, .day], from: day)
             if let new = tz.date(from: DateComponents(year: d.year, month: d.month, day: d.day, hour: t.hour, minute: t.minute)) {
+                if new < .now {
+                    model.lastError = "Cannot move “\(p.title)” into the past."
+                    continue
+                }
                 p.scheduledAt = new
                 p.updatedAt = .now
                 moved = true
@@ -343,10 +463,13 @@ struct PublicationMenu: View {
         Button("Resume") { for p in pubs where p.status == .paused { p.status = .needsReview }; save() }
         Button("Duplicate") {
             for p in pubs {
-                let c = Publication(workspaceID: p.workspaceID, scheduledAt: p.scheduledAt.addingTimeInterval(86_400), timeZoneID: p.timeZoneID)
-                c.assetID = p.assetID; c.variantID = p.variantID; c.platform = p.platform; c.accountID = p.accountID; c.accountName = p.accountName
+                var tz = Calendar(identifier: .gregorian)
+                tz.timeZone = TimeZone(identifier: p.timeZoneID) ?? .current
+                let nextDay = tz.date(byAdding: .day, value: 1, to: p.scheduledAt) ?? p.scheduledAt.addingTimeInterval(86_400)
+                let c = Publication(workspaceID: p.workspaceID, scheduledAt: nextDay, timeZoneID: p.timeZoneID)
+                c.assetID = p.assetID; c.extraAssetIDs = p.extraAssetIDs; c.variantID = p.variantID; c.platform = p.platform; c.accountID = p.accountID; c.accountName = p.accountName
                 c.boardID = p.boardID; c.boardName = p.boardName; c.title = p.title; c.desc = p.desc; c.link = p.link; c.altText = p.altText
-                c.runName = p.runName; c.campaignID = p.campaignID; c.status = .needsReview
+                c.runName = p.runName; c.campaignID = p.campaignID; c.metadataJSON = p.metadataJSON; c.status = .needsReview
                 model.context.insert(c)
             }
             save()
@@ -395,44 +518,118 @@ struct SinglePostEditor: View {
     @State private var suggestions: [String] = []
     @State private var suggesting = false
     @State private var suggestError: String?
+    @State private var manualPublishedURL = ""
+
+    private var spec: PlatformSpec? { PlatformRegistry.spec(pub.platform) }
+    private var titleMax: Int? { spec?.text["title"]?.max }
+    private var bodyMax: Int? {
+        ["description", "caption", "text", "commentary", "message"].compactMap { spec?.text[$0]?.max }.first
+    }
+    private var altMax: Int? { spec?.text["alt_text"]?.max }
 
     var body: some View {
         let locked = !(pub.status.isLocal || pub.status == .paused)
         let issues = pub.issues(model: model)
         VStack(spacing: 0) {
-            PanelHeader(title: "Post") { Text(pub.scheduledAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) + " · " + pub.scheduledAt.formatted(date: .omitted, time: .shortened)) }
+            PanelHeader(title: spec?.name ?? pub.platform.capitalized) { Text(pub.scheduledAt.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) + " · " + pub.scheduledAt.formatted(date: .omitted, time: .shortened)) }
             Divider().overlay(DS.stroke)
             InspectorScroll {
                 PinPreview(pub: pub)
+                if pub.contentItemID != nil || pub.status == .published {
+                    HStack(spacing: Space.sm) {
+                        if let cid = pub.contentItemID,
+                           let item = (try? model.context.fetch(FetchDescriptor<ContentItem>(predicate: #Predicate { $0.uuid == cid })))?.first {
+                            Button("Open in Composer") {
+                                model.composer.open(contentItem: item, model: model)
+                                model.page = .composer
+                            }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        }
+                        if pub.status == .published {
+                            Button("Repurpose Post") {
+                                model.composer.startNew(model: model)
+                                model.composer.title = pub.title
+                                model.composer.body = pub.desc
+                                model.composer.link = pub.link
+                                model.composer.altText = pub.altText
+                                model.composer.assetID = pub.assetID
+                                model.composer.extraAssetIDs = pub.extraAssetIDs
+                                model.page = .composer
+                            }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        }
+                    }
+                }
                 VStack(alignment: .leading, spacing: Space.sm) {
                     SectionLabel("Post")
-                    field("Title", count: pub.title.count, max: 100) {
+                    field("Title", count: titleMax != nil ? pub.title.count : nil, max: titleMax) {
                         TextField("Title", text: $pub.title, axis: .vertical).lineLimit(1...3).fieldStyle()
                     }
-                    field("Description", count: pub.desc.count, max: 800) {
+                    field("Description / Caption", count: bodyMax != nil ? pub.desc.count : nil, max: bodyMax) {
                         TextField("Description", text: $pub.desc, axis: .vertical).lineLimit(3...8).fieldStyle()
                     }
                     field("Destination link", count: nil, max: nil) {
                         TextField("https://", text: $pub.link).fieldStyle()
                     }
-                    field("Alt text", count: pub.altText.count, max: 500) {
+                    field("Alt text", count: altMax != nil ? pub.altText.count : nil, max: altMax) {
                         TextField("What the image shows", text: $pub.altText, axis: .vertical).lineLimit(1...3).fieldStyle()
                     }
                 }
                 .disabled(locked)
                 VStack(alignment: .leading, spacing: 0) {
-                    SectionLabel("Schedule").padding(.bottom, Space.xs)
-                    KeyValueRow("Board", pub.boardName.isEmpty ? "None" : pub.boardName)
+                    SectionLabel("Schedule & Ownership").padding(.bottom, Space.xs)
+                    if pub.platform == "pinterest" {
+                        KeyValueRow("Board", pub.boardName.isEmpty ? "None" : pub.boardName)
+                    }
+                    KeyValueRow("Account", pub.accountName.isEmpty ? "None" : pub.accountName)
+                    KeyValueRow("Owner", pub.publishOwner == .service ? "Remote Service" : "This Mac")
+                    KeyValueRow("Time Zone", pub.timeZoneID)
                     KeyValueRow(key: "Publish") {
                         DatePicker("", selection: $pub.scheduledAt).labelsHidden().disabled(locked)
                     }
                     KeyValueRow("Queue", pub.runName.isEmpty ? "—" : pub.runName)
-                    KeyValueRow(key: "Approval") { StatusChip(status: pub.status) }
+                    KeyValueRow(key: "Status") { StatusChip(status: pub.status) }
+                }
+                if pub.status == .scheduled && model.publishMode == .service {
+                    HStack(spacing: Space.sm) {
+                        let target: PublishOwner = pub.publishOwner == .service ? .mac : .service
+                        Button(target == .mac ? "Take Over on This Mac" : "Transfer to Remote Service") {
+                            Task { _ = await model.transferOwner(of: pub, to: target) }
+                        }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                    }
                 }
                 if !issues.isEmpty {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         SectionLabel("Checks")
                         ForEach(issues, id: \.self) { IssueRow(issue: $0) }
+                    }
+                }
+                if pub.status == .outcomeUnknown {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        SectionLabel("Manual Reconciliation Required")
+                        Text("SocialForge lost contact after sending this post and could not confirm whether the platform published it. Check your \(spec?.name ?? pub.platform) account before retrying to avoid duplicates.")
+                            .font(DS.small).foregroundStyle(DS.amber)
+                        TextField("Published URL (optional)", text: $manualPublishedURL).fieldStyle()
+                        HStack(spacing: Space.sm) {
+                            Button("Confirm Published") {
+                                model.markOutcomeConfirmedPublished(pub, url: manualPublishedURL.trimmingCharacters(in: .whitespacesAndNewlines))
+                                manualPublishedURL = ""
+                            }.buttonStyle(PrimaryButtonStyle(fullWidth: true))
+                            Button("Retry Publish") {
+                                model.retryPublication(pub)
+                            }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        }
+                    }
+                    .card(padding: Space.md)
+                }
+                if [.failed, .authRequired, .actionRequired].contains(pub.status) {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        if pub.status == .authRequired {
+                            Button("Open Connections to Reconnect") { model.page = .accounts }
+                                .buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        }
+                        Button("Retry Publish") {
+                            model.retryPublication(pub)
+                        }
+                        .buttonStyle(PrimaryButtonStyle(fullWidth: true))
                     }
                 }
                 VStack(alignment: .leading, spacing: Space.sm) {
@@ -442,7 +639,7 @@ struct SinglePostEditor: View {
                             .buttonStyle(SecondaryButtonStyle(fullWidth: true))
                             .disabled(suggesting || locked || model.textProvider == nil)
                         if model.textProvider == nil {
-                            Text("Add a text provider key in Settings > AI Providers.").font(DS.small).foregroundStyle(DS.text2)
+                            Text("Add a text provider key in Connections or Settings > AI Providers.").font(DS.small).foregroundStyle(DS.text2)
                         }
                         if let suggestError { Text(suggestError).font(DS.small).foregroundStyle(DS.red) }
                     }
@@ -450,17 +647,19 @@ struct SinglePostEditor: View {
                         HStack(alignment: .top) {
                             Text(s).font(DS.body).foregroundStyle(DS.textBody)
                             Spacer()
-                            Button("Use title") { pub.title = s }.buttonStyle(LinkButtonStyle()).disabled(locked)
+                            Button("Use title") { pub.title = s; pub.invalidateApprovalIfChanged(); try? model.context.save() }.buttonStyle(LinkButtonStyle()).disabled(locked)
                         }
                         .card(padding: Space.md)
                     }
                 }
-                if pub.status == .failed || pub.publishedURL != nil || pub.attempts > 0 {
+                if pub.status == .failed || pub.publishedURL != nil || pub.attempts > 0 || pub.lastError != nil {
                     VStack(alignment: .leading, spacing: Space.sm) {
                         SectionLabel("Result")
                         KeyValueRow("Attempts", "\(pub.attempts)")
-                        if let next = pub.nextAttemptAt, pub.status == .scheduled { KeyValueRow("Next try", next.formatted(.dateTime.hour().minute())) }
-                        if let e = pub.lastError { Text(e).font(DS.small).foregroundStyle(pub.status == .failed ? DS.red : DS.amber) }
+                        if let next = pub.nextAttemptAt, pub.status == .scheduled || pub.status == .retryScheduled {
+                            KeyValueRow("Next try", next.formatted(.dateTime.hour().minute()))
+                        }
+                        if let e = pub.lastError { Text(e).font(DS.small).foregroundStyle(pub.status == .failed || pub.status == .authRequired ? DS.red : DS.amber) }
                         if let url = pub.publishedURL, let u = URL(string: url) { Link("Open published post", destination: u).font(DS.bodyMedium) }
                         AttemptHistory(publicationID: pub.uuid)
                     }
@@ -469,20 +668,27 @@ struct SinglePostEditor: View {
             if pub.status == .needsReview || pub.status == .approved || pub.status == .draft {
                 Divider().overlay(DS.stroke)
                 HStack(spacing: Space.sm) {
-                    if pub.status == .needsReview {
-                        Button("Request changes") { pub.status = .draft }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                    if pub.status == .needsReview || pub.status == .draft {
+                        Button("Request changes") { pub.status = .draft; try? model.context.save() }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
                         Button("Approve") { pub.status = .approved; try? model.context.save() }
                             .buttonStyle(PrimaryButtonStyle(fullWidth: true))
                             .disabled(issues.contains { $0.level == .error })
                     } else {
-                        Button("Back to review") { pub.status = .needsReview }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        Button("Back to review") { pub.status = .needsReview; try? model.context.save() }.buttonStyle(SecondaryButtonStyle(fullWidth: true))
+                        Button("Schedule now") { Task { _ = await model.activate([pub]) } }
+                            .buttonStyle(PrimaryButtonStyle(fullWidth: true))
+                            .disabled(issues.contains { $0.level == .error })
                     }
                 }
                 .padding(Space.xl)
             }
         }
-        .onChange(of: pub.title) { pub.updatedAt = .now }
-        .onChange(of: pub.uuid) { suggestions = []; suggestError = nil }
+        .onChange(of: pub.title) { pub.invalidateApprovalIfChanged(); try? model.context.save() }
+        .onChange(of: pub.desc) { pub.invalidateApprovalIfChanged(); try? model.context.save() }
+        .onChange(of: pub.link) { pub.invalidateApprovalIfChanged(); try? model.context.save() }
+        .onChange(of: pub.altText) { pub.invalidateApprovalIfChanged(); try? model.context.save() }
+        .onChange(of: pub.scheduledAt) { pub.updatedAt = .now; try? model.context.save() }
+        .onChange(of: pub.uuid) { suggestions = []; suggestError = nil; manualPublishedURL = "" }
     }
 
     private func field<C: View>(_ label: String, count: Int?, max: Int?, @ViewBuilder _ content: () -> C) -> some View {
@@ -581,7 +787,12 @@ struct MultiPostEditor: View {
                             if !description.isEmpty { p.desc = description }
                             if !link.isEmpty { p.link = link }
                             if !altText.isEmpty { p.altText = altText }
-                            if shiftDays != 0 { p.scheduledAt = Calendar.current.date(byAdding: .day, value: shiftDays, to: p.scheduledAt) ?? p.scheduledAt }
+                            if shiftDays != 0 {
+                                var tz = Calendar(identifier: .gregorian)
+                                tz.timeZone = TimeZone(identifier: p.timeZoneID) ?? .current
+                                p.scheduledAt = tz.date(byAdding: .day, value: shiftDays, to: p.scheduledAt) ?? p.scheduledAt
+                            }
+                            p.invalidateApprovalIfChanged()
                             p.updatedAt = .now
                         }
                         try? model.context.save()

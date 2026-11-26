@@ -21,8 +21,16 @@ struct AnalyticsView: View {
     private var records: [PostRecord] {
         allPubs.filter { $0.workspaceID == model.workspaceID && (filter.campaign == nil || $0.campaignID == filter.campaign) }.map { p in
             PostRecord(platform: p.platform, status: p.statusRaw, scheduledAt: p.scheduledAt,
-                       publishedAt: p.status == .published ? p.updatedAt : nil,
+                       publishedAt: p.status == .published ? (p.publishedAt ?? p.updatedAt) : nil,
                        campaign: campaigns.first(where: { $0.uuid == p.campaignID })?.name, account: p.accountName)
+        }
+    }
+
+    private var filteredRecordsForExport: [PostRecord] {
+        let (from, to) = range
+        return records.filter { r in
+            r.scheduledAt >= from && r.scheduledAt <= to
+                && (filter.platform == nil || r.platform == filter.platform)
         }
     }
 
@@ -109,7 +117,10 @@ struct AnalyticsView: View {
                     VStack(alignment: .leading, spacing: Space.md) {
                         Text("AI usage").font(.system(size: 15, weight: .semibold))
                         KeyValueRow("Requests", "\(jobs.count)")
-                        KeyValueRow("Images made", "\(jobs.reduce(0) { $0 + $1.outputAssetIDs.count })")
+                        let imgCount = jobs.filter { $0.kind == "image" }.reduce(0) { $0 + $1.outputAssetIDs.count }
+                        let vidCount = jobs.filter { $0.kind == "video" }.reduce(0) { $0 + $1.outputAssetIDs.count }
+                        let audCount = jobs.filter { $0.kind == "audio" }.reduce(0) { $0 + $1.outputAssetIDs.count }
+                        KeyValueRow("Media generated", "\(imgCount) img · \(vidCount) vid · \(audCount) audio")
                         KeyValueRow("Tokens in / out", "\(jobs.reduce(0) { $0 + $1.inputTokens }) / \(jobs.reduce(0) { $0 + $1.outputTokens })")
                         KeyValueRow("Cost", "Not shown: providers bill you directly")
                     }
@@ -147,7 +158,7 @@ struct AnalyticsView: View {
         panel.nameFieldStringValue = "SocialForge posts.csv"
         panel.allowedContentTypes = [.commaSeparatedText]
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        try? Analytics.csv(records).write(to: url, atomically: true, encoding: .utf8)
+        try? Analytics.csv(filteredRecordsForExport).write(to: url, atomically: true, encoding: .utf8)
     }
 }
 
@@ -156,7 +167,7 @@ struct AnalyticsInspector: View {
     @Query(sort: \Publication.updatedAt, order: .reverse) private var pubs: [Publication]
 
     var body: some View {
-        let recent = pubs.filter { $0.workspaceID == model.workspaceID && ($0.status == .published || $0.status == .failed) }.prefix(12)
+        let recent = pubs.filter { $0.workspaceID == model.workspaceID && ($0.status == .published || $0.status == .failed || $0.status == .outcomeUnknown) }.prefix(12)
         VStack(spacing: 0) {
             PanelHeader(title: "Recent results")
             Divider().overlay(DS.stroke)
@@ -164,9 +175,20 @@ struct AnalyticsInspector: View {
                 if recent.isEmpty { Text("Published and failed posts appear here with their links and errors.").font(DS.body).foregroundStyle(DS.text2) }
                 ForEach(Array(recent)) { p in
                     VStack(alignment: .leading, spacing: 2) {
-                        HStack { PlatformBadge(platform: p.platform, size: 16); Text(p.title).font(DS.bodyMedium).lineLimit(1); Spacer(); StatusChip(status: p.status) }
+                        HStack { PlatformBadge(platform: p.platform, size: 16); Text(p.title.isEmpty ? "Untitled" : p.title).font(DS.bodyMedium).lineLimit(1); Spacer(); StatusChip(status: p.status) }
                         if let u = p.publishedURL, let url = URL(string: u) { Link(u.replacingOccurrences(of: "https://", with: ""), destination: url).font(DS.small).lineLimit(1) }
-                        if let e = p.lastError, p.status == .failed { Text(e).font(DS.small).foregroundStyle(DS.red).lineLimit(2) }
+                        if let e = p.lastError, p.status == .failed || p.status == .outcomeUnknown { Text(e).font(DS.small).foregroundStyle(p.status == .failed ? DS.red : DS.amber).lineLimit(2) }
+                        if p.status == .published {
+                            Button("Repurpose in Composer") {
+                                model.composer.startNew(model: model)
+                                model.composer.title = p.title
+                                model.composer.body = p.desc
+                                model.composer.link = p.link
+                                model.composer.altText = p.altText
+                                model.composer.assetID = p.assetID
+                                model.page = .composer
+                            }.buttonStyle(LinkButtonStyle())
+                        }
                     }
                     .padding(.vertical, Space.xs)
                 }

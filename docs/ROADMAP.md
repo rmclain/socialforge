@@ -1,40 +1,32 @@
 # Roadmap
 
-## Done (first build, 2026-11-19)
+## Completed
 
-- **M1 Foundation**: 13-page sidebar shell with inspector, workspaces, SwiftData store, Settings (publishing service, AI providers placeholder, ComfyUI connection test, appearance), Ember accent from the design.
-- **M2 Media and creative**: library import (folders, drag and drop, CSV alongside), SHA-256 duplicates, thumbnails, metadata, six export presets, Creative Studio with layered documents, real-font text, templates with variables, undo/redo, PNG export, brand kits.
-- **M3 Pinterest bulk publishing**: CSV mapping and matching with ambiguity reports, account/board choice with capability checks, DST-safe cadence, validation, multi-edit, approval, activation; calendar (month, week, queue, drag to reschedule); publishing service with idempotent jobs, retries, reconciliation, attempt history, sync.
-- **On-Mac publishing** (your choice of a Mac-only app): PublishEngine with retries, reconciliation, and attempt history; the background publisher (launch agent via SMAppService) for when the app is closed; Docker removed.
+- **M1 Foundation**: 13-page sidebar shell with inspector, brand workspaces, SwiftData store, warm orange design system (`UI/DS.swift`, `UI/Grid.swift`, bundled Instrument Serif), and light/dark appearances.
+- **M2 Media and creative**: Local-first media library (drag-and-drop, folders, CSV alongside, SHA-256 deduplication, bounded disk-cached thumbnails, missing-file health check & relink), Creative Studio (layered documents, real-font text, editable brand-bound templates, stable `sizeSetID` size sets, safe-zone overlays, video/audio timeline & export), and Brand Kits (`.sfbrand` export/import, primary brand kit).
+- **M3–M6 Multi-platform, Unified Connections, AI & MCP (2026-11-26)**:
+  - **Unified Connections hub & wizards**: 5-category Connections page (`Social Accounts`, `AI Providers`, `Media Storage`, `Automation & Agents`, `Publishing Infrastructure`), step-by-step setup wizards, 13-state connection health lifecycle, dynamic account capability layer, shared credential profiles across brand workspaces, and secret-redacted Connection Diagnostics.
+  - **Hardened OAuth, Keychain & Token Lifecycle**: RFC 7636 PKCE (`S256`), strict `state` & redirect URI verification, hardened IPv4/IPv6 loopback listener, `TokenLifecycleManager` single-flight refresh deduplication, Keychain status checks & per-profile credential scoping, and hardened `site/index.html` OAuth redirect page (`no-referrer`, URL history stripping).
+  - **All 8 social platform adapters**: Official API adapters in `SocialForgeKit` for Pinterest (OAuth + refresh + board sections + Video Pins), Facebook Pages (text, photo, multi-photo, link, Reel), Instagram (Facebook-linked Professional & direct Instagram Business Login, photo, carousel, Reel, 24h quota checks), Threads (text, photo, video, carousel, token refresh), LinkedIn (member & organization pages), X (PKCE + v2 chunked media upload + weighted character counting), TikTok (PKCE + `queryCreatorInfo` + Inbox & Direct Post), and YouTube (PKCE + resumable upload + Shorts/visibility/disclosures).
+  - **Production-grade Publishing Engine & Reconciled Optional Service**: 18-state publishing lifecycle, approval-hash invalidation on edit, durable `PublishAttempt` logs, crash recovery, jitter + `Retry-After` + 403 vs 401 distinction, manual reconciliation UI for `.outcomeUnknown`, explicit per-post `publishOwner` & `MissedPostPolicy`, and hardened optional Fastify API (`GET /v1/capabilities`, session expiry, UUID validation, transactional rollback, tenant isolation).
+  - **AI Providers, ComfyUI & Outbound/Inbound MCP**: Live model discovery, HTTPS enforcement for remote endpoints, prompt-injection hardening, ComfyUI workflow validation (`/object_info`), job-scoped cancellation, restart recovery & `LoadImage` handoff, Outbound Creative MCP client (stdio + HTTP, allow-list, approval prompts, untrusted output handling), and hardened 17-tool Inbound MCP server with crash-safe idempotency and quarantine.
+  - **Cohesive workflows**: Multi-platform Composer & Bulk Publisher (all 8 platforms, saved recipes, campaign UTM, retry failed, error CSV export), DST-safe Calendar & attention-focused Queue, hardened Automations (managed-folder guard, workspace isolation, dedup fingerprints), Analytics CSV formula sanitization, and contextual Overview setup checklist.
 
-- **Design pass and feature round (2026-11-19, second session)**: the Claude Design look on every page (Instrument Serif bundled), editable brand templates with brand-bound colors, fonts, and logo, batch template application, smart resize, Vision/Core Image transforms, Composer with per-platform versions, AI Studio with ComfyUI and BYOK providers, AI copy in Bulk Publisher, a typed command assistant, Automations, Campaigns, and Analytics.
+## Honest verification status & remaining limitations
 
-## Known limitations
+- **Live platform APIs**: All 8 social platform adapters, S3/R2 public media hosting, AI cloud/local providers, and ComfyUI are built against official documentation and verified with automated HTTP-stubbed tests (`197` Swift unit tests, `89` in-app self-test checks, `23` Fastify API tests). **None of the 8 social platforms have been live-verified with real provider credentials or real live posts yet.** Every platform is explicitly labeled `Adapter built · unverified live` in the UI until verified with real credentials.
+- **Background publisher (`SMAppService`)**: The launch agent binary mode (`SocialForge --publish-agent --once`) and lock handoff are verified end-to-end in the self-test, but `SMAppService` registration in macOS System Settings › Login Items requires interactive user approval on a real Mac.
+- **Notarized distribution**: Release scripts (`tools/package.sh`, `tools/release.sh`) support universal builds, hardened runtime, Developer ID signing, and `notarytool` notarization, and refuse to claim notarization without a Developer ID Application certificate and `NOTARY_PROFILE`.
+- **Mac-only wake requirement**: On-Mac publishing posts while the Mac is awake (and catches up on wake according to each post's `MissedPostPolicy`). Publishing while the Mac is asleep or offline requires the optional self-hosted Fastify service in `services/api/`.
+- **Optional service multi-platform coverage**: `services/api/` currently supports Pinterest (plus the labeled mock provider) and advertises its exact capabilities via `GET /v1/capabilities`; other platforms publish directly from the Mac app.
+- **Screenshots without Screen Recording permission**: `tools/snap.sh` falls back to window rendering when the terminal lacks Screen Recording permission; granting Screen Recording produces full-fidelity window chrome captures.
 
-- AI providers (OpenAI, Anthropic, Gemini, local) and ComfyUI are built against their documented APIs and tested with stubbed HTTP only; no live key or server was used. Use Test in Settings to verify yours.
-- Extend and Relight in Creative Studio need an AI image provider with those operations; they are shown disabled with the reason.
-- Composer drafts Facebook, LinkedIn, and X versions, but only Pinterest can be scheduled (milestone 4).
-- Automations run while SocialForge is open (folder checks every 5 minutes); they always stop at Needs Review.
-
-- Mac-only: nothing posts while the Mac is asleep or off; due posts go out on wake. The optional service in services/api covers that case.
-- The background publisher must be turned on in Settings and approved in System Settings > Login Items; it was not registered on the build Mac (tested by running the agent mode directly).
-- Pinterest needs your own Pinterest app (ID and secret in the Keychain); a shared app would need a small token relay.
-- Pinterest live API: built, **not verified** (needs app credentials and review). Token refresh is not implemented yet; an expired token marks the account expired.
-- With the optional service, editing a scheduled post needs cancel and re-activate.
-- Video files import and list, but have no transforms or posting yet.
-- No AI generation yet: titles come from the CSV or filename. AI Studio, Composer, Automations, Campaigns, and Analytics pages say which milestone brings them.
-- The optional service's tokens come from `npm run token`; there are no user accounts or sign-in yet.
-- Snapshots without Screen Recording permission use a fallback that leaves sidebars and some form backgrounds blank; grant permission to your terminal for faithful captures.
-- No XcodeGen UI test target yet; UI flows are covered by the in-app self-test and snapshots.
-- Instrument Serif (from the design) is not bundled.
-
-## Next
+## Next milestones
 
 | Milestone | Scope |
 |---|---|
-| M3 finish | Verify Pinterest live; refresh-token rotation; a "posts due soon" notification and an optional wake request before scheduled times; partial-import error report export |
-| M4 Multi-platform | Composer with per-platform variants and previews; Facebook Pages, LinkedIn, X adapters and OAuth (PKCE for X) |
-| M5 AI creative | BYOK text/image providers in the Keychain, cost estimates, ComfyUI workflow import, parameter mapping, queue with WebSocket progress, AI background → editable text pipeline (scenario B) |
-| M6 ArtCraft and automation | MCP connection manager with restricted roots and approvals, PhotoCraft integration, folder-watch automations, typed natural-language command panel with previews |
-| M7 Commercial | User accounts and sign-in, Stripe Checkout and Billing Portal, entitlements enforced by the service, credit ledger with idempotent charges, analytics from provider metrics |
-| M8 Polish | XcodeGen UI tests, performance runs on 5,000 assets, accessibility audit, notarized Developer ID build and installer |
+| Live Provider Certification | Run live OAuth, media upload, and test posts across all 8 platforms with real developer apps (sandbox/test accounts) and update `liveVerified` flags only after observed success |
+| Remote Service Multi-Platform Parity | Extend `services/api/` beyond Pinterest to support Meta, LinkedIn, X, TikTok, and YouTube remote publishing when users want asleep-Mac scheduling for all platforms |
+| Provider Engagement Metrics Sync | Add opt-in read-only metrics ingestion for published posts where platform APIs grant analytics scopes |
+| Automated UI Test Target & Accessibility Audit | Add an XCUITest target, VoiceOver/keyboard-only audit pass, and 5,000-asset profiling benchmarks on real media libraries |
+| Notarized Public Release | Sign and notarize a universal Developer ID build via `tools/release.sh` and verify auto-update end-to-end |

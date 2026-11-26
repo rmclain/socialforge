@@ -32,10 +32,13 @@ final class AppUpdater {
     static let shared = AppUpdater()
 
     var available: AppRelease?
-    var showSheet = false
+    var showSheet = false {
+        didSet { if showSheet { message = nil } }
+    }
     var busy = false
     var progress: String?
     var message: String?
+    var lastCheckedAt: Date? = UpdateSettings.lastCheck
 
     /// Off in tests, snapshots, the background agent, and builds run outside an .app.
     var isEnabled: Bool {
@@ -56,17 +59,24 @@ final class AppUpdater {
             return
         }
         busy = true
+        message = nil
         defer { busy = false }
         let result = await UpdateChecker(repository: UpdateSettings.repository).check(currentVersion: UpdateSettings.currentVersion)
-        UserDefaults.standard.set(Date.now, forKey: UpdateSettings.lastCheckKey)
         switch result {
         case .available(let release):
+            let now = Date.now
+            UserDefaults.standard.set(now, forKey: UpdateSettings.lastCheckKey)
+            lastCheckedAt = now
             available = release
             if userInitiated { showSheet = true }
         case .upToDate(let latest):
+            let now = Date.now
+            UserDefaults.standard.set(now, forKey: UpdateSettings.lastCheckKey)
+            lastCheckedAt = now
             available = nil
             if userInitiated { message = "SocialForge \(UpdateSettings.currentVersion) is the newest version (latest release \(latest))." }
         case .noDownload(let why), .failed(let why):
+            // Do not record lastCheck on failed/rate-limited checks so auto-check can retry cleanly.
             if userInitiated { message = why }
         }
     }
@@ -75,6 +85,7 @@ final class AppUpdater {
     func install(_ release: AppRelease) async {
         guard !busy else { return }
         busy = true
+        message = nil
         defer { busy = false }
         let installer = UpdateInstaller()
         let work = URL.cachesDirectory.appending(path: "SocialForge/Update")
@@ -212,7 +223,7 @@ struct UpdateSettingsView: View {
             HStack {
                 Button(updater.busy ? "Checking…" : "Check Now") { Task { await updater.check(userInitiated: true) } }
                     .buttonStyle(SecondaryButtonStyle()).disabled(updater.busy || !updater.isEnabled)
-                if let last = UpdateSettings.lastCheck {
+                if let last = updater.lastCheckedAt {
                     Text("Last checked \(last.formatted(.relative(presentation: .named)))").font(DS.small).foregroundStyle(DS.text2)
                 }
             }

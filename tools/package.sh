@@ -21,7 +21,7 @@ find_identity() { security find-identity -v -p codesigning 2>/dev/null | grep -m
 [[ -n "$identity" ]] || identity=$(find_identity "Apple Development")
 [[ -n "$identity" ]] || identity=-
 
-swift build -c release --arch arm64 --arch x86_64 --package-path "$mac" --scratch-path "$scratch" 2>&1 | grep -E "error|Build complete" || true
+swift build -c release --arch arm64 --arch x86_64 --package-path "$mac" --scratch-path "$scratch"
 bin="$scratch/apple/Products/Release/$name"
 [[ -x "$bin" ]] || bin="$scratch/out/Products/Release/$name"
 [[ -x "$bin" ]] || { echo "build failed"; exit 1; }
@@ -30,7 +30,9 @@ app="$stage/$name.app"
 mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources/Fonts" "$app/Contents/Library/LaunchAgents"
 cp "$bin" "$app/Contents/MacOS/$name"
 sed -e "s/__BUILD__/$(date +%Y%m%d%H%M)/" "$mac/Info.plist.in" > "$app/Contents/Info.plist"
-[[ -f "$mac/Resources/Assets.car" ]] || "$mac/tools/make_icon.sh"
+if [[ ! -f "$mac/Resources/Assets.car" || ( -d "$mac/Icon/AppIcon.icon" && -n "$(find "$mac/Icon/AppIcon.icon" -newer "$mac/Resources/Assets.car" | head -1)" ) ]]; then
+  "$mac/tools/make_icon.sh"
+fi
 cp -X "$mac/Resources/Assets.car" "$mac/Resources/AppIcon.icns" "$app/Contents/Resources/"
 cp "$mac/Fonts/"*.ttf "$mac/Fonts/OFL.txt" "$app/Contents/Resources/Fonts/"
 mkdir -p "$app/Contents/Resources/Workflows"
@@ -43,7 +45,7 @@ else
   codesign --force --options runtime --timestamp --sign "$identity" "$app" 2>/dev/null \
     || codesign --force --options runtime --sign "$identity" "$app"
 fi
-codesign --verify --strict "$app"
+codesign --verify --deep --strict "$app"
 lipo -archs "$app/Contents/MacOS/$name"
 
 mkdir -p "$root/dist"

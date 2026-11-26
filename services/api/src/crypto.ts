@@ -10,12 +10,13 @@ export function encrypt (plain: string, key: Buffer): string {
 
 export function decrypt (sealed: string, key: Buffer): string {
   const buf = Buffer.from(sealed, 'base64')
+  if (buf.length < 28) throw new Error('Invalid encrypted payload')
   const decipher = createDecipheriv('aes-256-gcm', key, buf.subarray(0, 12))
   decipher.setAuthTag(buf.subarray(12, 28))
   return Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8')
 }
 
-export interface SessionClaims { ws: string, iat: number }
+export interface SessionClaims { ws: string, iat: number, exp?: number }
 
 /** Signed bearer tokens for the Mac app: base64url(json).base64url(hmac-sha256). */
 export function signSession (claims: SessionClaims, key: string): string {
@@ -24,15 +25,19 @@ export function signSession (claims: SessionClaims, key: string): string {
   return `${body}.${sig}`
 }
 
-export function verifySession (token: string, key: string): SessionClaims | null {
-  const [body, sig] = token.split('.')
+export function verifySession (token: string, key: string, nowSec = Math.floor(Date.now() / 1000)): SessionClaims | null {
+  const parts = token.split('.')
+  if (parts.length !== 2) return null
+  const [body, sig] = parts
   if (!body || !sig) return null
   const want = createHmac('sha256', key).update(body).digest()
   const got = Buffer.from(sig, 'base64url')
   if (got.length !== want.length || !timingSafeEqual(got, want)) return null
   try {
     const claims = JSON.parse(Buffer.from(body, 'base64url').toString('utf8')) as SessionClaims
-    return typeof claims.ws === 'string' ? claims : null
+    if (typeof claims.ws !== 'string' || !/^[0-9a-f-]{36}$/i.test(claims.ws)) return null
+    if (typeof claims.exp === 'number' && claims.exp <= nowSec) return null
+    return claims
   } catch {
     return null
   }

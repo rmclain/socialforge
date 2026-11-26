@@ -1,8 +1,8 @@
 {
   "platform": "youtube",
   "name": "YouTube Shorts",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -19,7 +19,15 @@
   "contentTypes": [
     {
       "id": "short",
-      "name": "Short",
+      "name": "Short (vertical/square ≤ 3 min)",
+      "requiredScopes": [
+        "https://www.googleapis.com/auth/youtube.upload"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "video",
+      "name": "Video",
       "requiredScopes": [
         "https://www.googleapis.com/auth/youtube.upload"
       ],

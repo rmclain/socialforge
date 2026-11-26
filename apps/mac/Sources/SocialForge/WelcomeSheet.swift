@@ -16,6 +16,7 @@ struct WelcomeSheet: View {
     @State private var logo: URL?
     /// nil: the app's library in Application Support.
     @State private var folder: URL?
+    @State private var addMockAccount = false
     @State private var working = false
 
     private var folderLabel: String {
@@ -82,6 +83,8 @@ struct WelcomeSheet: View {
             field("Hashtags (optional)") {
                 TextField("Hashtags", text: $hashtags, prompt: Text("handmade, slowliving, ceramics")).fieldStyle()
             }
+            Toggle("Add a local mock account so I can test scheduling right away (nothing posts externally)", isOn: $addMockAccount)
+                .toggleStyle(SFToggleStyle()).font(DS.body)
             HStack(spacing: Space.sm) {
                 Image(systemName: "square.and.arrow.down").foregroundStyle(DS.text3)
                 Text("Already have a brand kit? Import a .sfbrand file. You can export yours any time from Brand Kits.")
@@ -118,6 +121,7 @@ struct WelcomeSheet: View {
         let tags = hashtags.split(separator: ",").map(String.init)
         Task {
             await model.completeBrandSetup(name: name, colorHex: color, voice: voice, hashtags: tags, logo: logo, folder: folder)
+            if addMockAccount { model.addMockAccount() }
             working = false
         }
     }

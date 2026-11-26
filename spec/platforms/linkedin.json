@@ -1,8 +1,8 @@
 {
   "platform": "linkedin",
   "name": "LinkedIn",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -47,14 +47,15 @@
       "png",
       "gif"
     ],
-    "maxBytes": 36152320,
-    "maxBytesEnforced": false,
+    "maxBytes": 5242880,
+    "maxBytesEnforced": true,
     "recommended": {
       "width": 1200,
       "height": 627,
       "aspect": "1.91:1"
     },
-    "recommendedMinWidth": 552
+    "recommendedMinWidth": 552,
+    "note": "LinkedIn Images API: up to 5 MB and 36.15 megapixels (JPEG, PNG, GIF)."
   },
   "video": {
     "formats": [

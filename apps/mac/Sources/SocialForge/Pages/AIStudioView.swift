@@ -51,6 +51,19 @@ final class AIStudioModel {
     /// The command panel's starting text (from the automation bar).
     var pendingCommand = ""
     var verified: [AIProviderID: String] = [:]
+    var workflowCheckReport: String?
+
+    func resetForWorkspaceSwitch() {
+        running?.cancel()
+        running = nil
+        progress = nil
+        resultIDs = []
+        selectedResult = nil
+        lastJobID = nil
+        referenceAssetID = nil
+        sendToStudio = false
+        workflowCheckReport = nil
+    }
 
     static let aspects: [(String, Int, Int)] = [("2:3", 832, 1248), ("1:1", 1024, 1024), ("4:5", 896, 1120), ("16:9", 1344, 768), ("9:16", 768, 1344)]
 
@@ -87,20 +100,32 @@ final class AIStudioModel {
         if outputKind == .image && !allowText { finalPrompt += ". No text, no letters, no logos, no watermark." }
         let job = AIJob(workspaceID: ws, provider: provider == .comfyui ? "ComfyUI" : provider.displayName, kind: outputKind.rawValue, prompt: currentPrompt)
         job.seed = seed
+        job.serverURL = provider == .comfyui ? model.comfyURLString : (model.aiConfigs[provider]?.baseURL ?? "")
+        job.modelName = provider == .comfyui ? (checkpoint ?? "") : (model.aiConfigs[provider]?.imageModel ?? "")
         model.context.insert(job)
         try? model.context.save()
         lastJobID = job.uuid
         lastError = nil
         resultIDs = []
         let count = mode == .image ? batch : 1, (w, h) = size, baseSeed = seed
+        let refAsset = referenceAssetID.flatMap { model.asset($0) }
         progress = (0, count, 0, 0)
         running = Task { @MainActor in
             defer { running = nil; progress = nil; seed = Int.random(in: 1...99_999) }
             do {
                 var made = 0
                 if provider == .comfyui {
-                    guard let client = model.comfyClient else { throw AIError.notConfigured("Set the ComfyUI address in Settings > ComfyUI.") }
+                    guard let client = model.comfyClient else { throw AIError.notConfigured("Set the ComfyUI address in Connections or Settings > ComfyUI.") }
                     let workflow = try comfyWorkflow(model: model, mode: mode)
+                    job.workflowName = workflow.name
+                    // Upload reference image once if the workflow has a LoadImage input.
+                    var uploadedInputName: String?
+                    if let refAsset, workflow.mapping.inputImage != nil,
+                       let data = try? Data(contentsOf: refAsset.storedURL) {
+                        uploadedInputName = try await client.uploadImage(data, filename: refAsset.filename)
+                    }
+                    // Only override checkpoint on the built-in Text-to-Image workflow (never silently overwrite custom workflows).
+                    let overrideCheckpoint = (mode == .image && workflowID == nil) ? checkpoint : nil
                     for i in 0..<count {
                         try Task.checkCancellation()
                         // nil keeps the workflow's own negative prompt (text workflows tune theirs).
@@ -108,10 +133,11 @@ final class AIStudioModel {
                             : "text, letters, words, watermark, logo, blurry"
                         let graph = workflow.applying(prompt: finalPrompt, negative: negative, seed: baseSeed + i,
                                                       width: outputKind == .audio ? nil : w, height: outputKind == .audio ? nil : h,
-                                                      batch: 1, checkpoint: mode == .image ? checkpoint : nil,
+                                                      batch: 1, checkpoint: overrideCheckpoint,
                                                       length: mode == .video ? workflow.frames(forSeconds: videoSeconds) : nil,
                                                       seconds: mode == .music ? musicSeconds : nil,
-                                                      lyrics: mode == .music ? lyricsText : nil)
+                                                      lyrics: mode == .music ? lyricsText : nil,
+                                                      inputImage: uploadedInputName)
                         let clientID = UUID().uuidString
                         let watcher = Task { @MainActor in
                             for await p in client.progress(clientID: clientID) {
@@ -119,10 +145,22 @@ final class AIStudioModel {
                                 job.progress = (Double(i) + Double(p.value) / Double(max(1, p.max))) / Double(count)
                             }
                         }
+                        defer { watcher.cancel() }
                         // Video and music take longer than a picture.
-                        let files = try await client.runFiles(graph: graph, clientID: clientID,
-                                                              timeout: outputKind == .image ? .seconds(600) : .seconds(1800))
-                        watcher.cancel()
+                        let jobUUID = job.uuid
+                        let files = try await client.runFiles(
+                            graph: graph,
+                            clientID: clientID,
+                            timeout: outputKind == .image ? .seconds(600) : .seconds(1800),
+                            onSubmitted: { pid in
+                                Task { @MainActor in
+                                    if let j = (try? model.context.fetch(FetchDescriptor<AIJob>(predicate: #Predicate { $0.uuid == jobUUID })))?.first {
+                                        j.remoteJobID = pid
+                                        try? model.context.save()
+                                    }
+                                }
+                            }
+                        )
                         made += files.count
                         try await importOutputs(files.map { ($0.data, ($0.filename as NSString).pathExtension) }, kind: outputKind,
                                                 model: model, job: job, seed: baseSeed + i)
@@ -143,6 +181,8 @@ final class AIStudioModel {
                 model.log("AI made \(made) \(outputKind.noun)\(made == 1 ? "" : "s") with \(job.provider)",
                           symbol: outputKind == .audio ? "music.note" : outputKind == .video ? "film" : "sparkles")
             } catch is CancellationError {
+                job.status = "canceled"
+            } catch AIError.cancelled {
                 job.status = "canceled"
             } catch {
                 job.status = "failed"
@@ -171,6 +211,7 @@ final class AIStudioModel {
     private func importOutputs(_ files: [(data: Data, ext: String)], kind: ComfyOutputKind, model: AppModel, job: AIJob, seed: Int) async throws {
         let dir = FileManager.default.temporaryDirectory.appending(path: "sf-ai-\(job.uuid.uuidString)", directoryHint: .isDirectory)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
         var urls: [URL] = []
         for (i, f) in files.enumerated() {
             // Keep the real file type (mp4, webm, flac, mp3…) so the library reads it as video or audio.
@@ -179,14 +220,47 @@ final class AIStudioModel {
             urls.append(u)
         }
         let added = await model.importMedia(urls)
+        let provenance: [String: String] = [
+            "provider": job.provider,
+            "workflow": job.workflowName,
+            "model": job.modelName,
+            "seed": "\(seed)",
+            "job_id": job.uuid.uuidString,
+            "remote_job_id": job.remoteJobID,
+        ]
+        let provenanceData = (try? JSONEncoder().encode(provenance)) ?? Data()
         for a in added {
             a.collection = kind == .audio ? "AI music" : kind == .video ? "AI video" : "AI backgrounds"
             a.tags = ["ai", job.provider.lowercased()] + (kind == .image ? [] : [kind.rawValue])
             a.notes = "\(job.provider) · seed \(seed) · \(job.prompt)"
+            a.provenanceJSON = provenanceData
         }
         job.outputAssetIDs += added.map(\.uuid)
         resultIDs += added.map(\.uuid)
         try? model.context.save()
+    }
+
+    @MainActor
+    func checkCurrentWorkflow(model: AppModel) async {
+        guard let client = model.comfyClient else {
+            workflowCheckReport = "ComfyUI is not configured."
+            return
+        }
+        do {
+            let wf = try comfyWorkflow(model: model, mode: mode)
+            let v = try await client.validateWorkflow(wf)
+            if v.isValid && v.warnings.isEmpty {
+                workflowCheckReport = "“\(wf.name)” is ready on ComfyUI (all nodes and models present)."
+            } else {
+                var parts: [String] = []
+                if !v.missingNodes.isEmpty { parts.append("Missing nodes: \(v.missingNodes.joined(separator: ", "))") }
+                if !v.missingModels.isEmpty { parts.append("Missing models: \(v.missingModels.joined(separator: ", "))") }
+                parts += v.warnings
+                workflowCheckReport = parts.joined(separator: " · ")
+            }
+        } catch {
+            workflowCheckReport = error.localizedDescription
+        }
     }
 
     @MainActor
@@ -222,9 +296,9 @@ final class AIStudioModel {
 
 extension AppModel {
     /// Keeps a record of every AI request: provider, tokens, and outcome. Never stores keys or full responses.
-    func recordAI(kind: String, prompt: String, usage: AIUsage?, ok: Bool, detail: String = "") {
+    func recordAI(kind: String, prompt: String, usage: AIUsage?, ok: Bool, detail: String = "", providerName: String? = nil) {
         guard let workspaceID else { return }
-        let j = AIJob(workspaceID: workspaceID, provider: textProviderID.displayName, kind: kind, prompt: String(prompt.prefix(200)))
+        let j = AIJob(workspaceID: workspaceID, provider: providerName ?? textProviderID.displayName, kind: kind, prompt: String(prompt.prefix(200)))
         j.status = ok ? "done" : "failed"
         j.detail = detail
         j.inputTokens = usage?.inputTokens ?? 0
@@ -241,6 +315,7 @@ struct AIStudioView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \AIJob.createdAt, order: .reverse) private var allJobs: [AIJob]
     @Query(sort: \ComfyWorkflowRecord.createdAt) private var workflows: [ComfyWorkflowRecord]
+    @State private var confirmDelete: MediaAsset?
 
     private var ai: AIStudioModel { model.aiStudio }
 
@@ -249,8 +324,22 @@ struct AIStudioView: View {
         ScrollView {
             VStack(alignment: .leading, spacing: Space.xl) {
                 VStack(alignment: .leading, spacing: Space.md) {
-                    PillPicker(options: AIStudioModel.Mode.allCases, selection: $ai.mode) { $0.rawValue }
-                        .fixedSize()
+                    HStack {
+                        PillPicker(options: AIStudioModel.Mode.allCases, selection: $ai.mode) { $0.rawValue }
+                            .fixedSize()
+                        Spacer()
+                        if let refID = ai.referenceAssetID, let ref = model.asset(refID) {
+                            HStack(spacing: Space.xs) {
+                                Thumbnail(path: ref.storedPath, maxPixel: 48)
+                                    .frame(width: 24, height: 24).clipShape(RoundedRectangle(cornerRadius: 4))
+                                Text("Ref: \(ref.filename)").font(DS.small).foregroundStyle(DS.text2).lineLimit(1)
+                                Button { ai.referenceAssetID = nil } label: { Image(systemName: "xmark.circle.fill").foregroundStyle(DS.text3) }
+                                    .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, Space.sm).padding(.vertical, 4)
+                            .background(DS.fill, in: Capsule())
+                        }
+                    }
                     TextField(ai.mode == .image ? (ai.allowText ? "Describe the image. Put words to draw in quotes, like a mug printed with \"GOOD MORNING\"."
                                                    : "Describe the background. Leave room for your headline; text is added later as real type.")
                               : ai.mode == .video ? "Describe the shot: subject, camera move, light. Text and logo go on top in Creative Studio."
@@ -327,6 +416,11 @@ struct AIStudioView: View {
                         }
                     }
                     HStack(spacing: Space.sm) {
+                        if ai.mode != .image || model.imageProviderID == .comfyui {
+                            Button("Check Workflow") { Task { await ai.checkCurrentWorkflow(model: model) } }
+                                .buttonStyle(SecondaryButtonStyle())
+                                .disabled(!model.comfyState.isConnected)
+                        }
                         Spacer()
                         if ai.running != nil {
                             Button("Stop") { ai.cancel() }.buttonStyle(SecondaryButtonStyle())
@@ -337,6 +431,9 @@ struct AIStudioView: View {
                             .disabled(ai.running != nil || ai.currentPrompt.isEmpty || !model.isConfigured(provider))
                             .keyboardShortcut(.return, modifiers: .command)
                             .help(model.isConfigured(provider) ? "Generate (Command-Return)" : "Set up \(provider.displayName) first")
+                    }
+                    if let report = ai.workflowCheckReport {
+                        Text(report).font(DS.small).foregroundStyle(report.contains("ready") ? DS.green : DS.amber)
                     }
                     if !model.isConfigured(ai.mode == .image ? model.imageProviderID : .comfyui) {
                         Label(ai.mode != .image || model.imageProviderID == .comfyui ? "ComfyUI is not reachable at \(model.comfyURLString). Start it, or change the address in Settings > ComfyUI."
@@ -356,6 +453,20 @@ struct AIStudioView: View {
         .task {
             if model.comfyState == .unknown { await model.checkComfy() }
             if model.comfyState.isConnected && ai.checkpoints.isEmpty { await ai.loadCheckpoints(model: model) }
+        }
+        .alert("Delete Generated Result?", isPresented: Binding(get: { confirmDelete != nil }, set: { if !$0 { confirmDelete = nil } })) {
+            Button("Cancel", role: .cancel) { confirmDelete = nil }
+            Button("Move to Trash", role: .destructive) {
+                if let a = confirmDelete { ai.deleteResult(a, model: model) }
+                confirmDelete = nil
+            }
+        } message: {
+            if let a = confirmDelete {
+                let usage = model.mediaUsage([a])
+                Text(usage.posts == 0 && usage.designs == 0
+                     ? "Move \"\(a.filename)\" to the Trash and remove it from your Media Library?"
+                     : "Warning: used in \(usage.posts) post(s) and \(usage.designs) design(s). Deleting \"\(a.filename)\" will detach it from those items.")
+            }
         }
     }
 
@@ -449,8 +560,8 @@ struct AIStudioView: View {
         }
     }
 
-    /// Deletes one result: gone from the batch, the library, and the history, with its file in the Trash.
-    private func delete(_ a: MediaAsset) { ai.deleteResult(a, model: model) }
+    /// Prompts before deleting a generated result (warns if used in posts or designs).
+    private func delete(_ a: MediaAsset) { confirmDelete = a }
 
     /// Images fill the photo slot; clips and music go onto the open design, or a new TikTok-sized video design.
     private func useInStudio(_ a: MediaAsset) {
@@ -665,8 +776,9 @@ struct GenerateSection: View {
     let publications: [Publication]
     @Environment(AppModel.self) private var model
     @State private var onlyEmpty = true
-    @State private var running = false
+    @State private var runningTask: Task<Void, Never>?
     @State private var done = 0
+    @State private var failed = 0
     @State private var error: String?
 
     var body: some View {
@@ -674,14 +786,21 @@ struct GenerateSection: View {
         VStack(alignment: .leading, spacing: Space.sm) {
             SectionLabel("Generate", trailing: AnyView(Image(systemName: "sparkles").foregroundStyle(DS.accent)))
             if model.textProvider == nil {
-                Text("Titles and descriptions come from the CSV or filename. Add a text provider in Settings > AI Providers to write them with AI.")
+                Text("Titles and descriptions come from the CSV or filename. Add a text provider in Connections or Settings > AI Providers to write them with AI.")
                     .font(DS.small).foregroundStyle(DS.text2)
-                Button("Set Up AI") { model.settingsTab = .ai; model.page = .settings }.buttonStyle(SecondaryButtonStyle())
+                Button("Set Up AI") { model.page = .accounts }.buttonStyle(SecondaryButtonStyle())
             } else {
                 Toggle("Only fill empty or filename titles", isOn: $onlyEmpty).toggleStyle(SFToggleStyle()).font(DS.body)
-                Button(running ? "Writing \(done) of \(targets.count)…" : "Write titles and descriptions for \(targets.count) posts") { Task { await run(targets) } }
+                HStack(spacing: Space.sm) {
+                    Button(runningTask != nil ? "Writing \(done) of \(targets.count)…" : "Write copy for \(targets.count) posts") {
+                        runningTask = Task { await run(targets) }
+                    }
                     .buttonStyle(SecondaryButtonStyle(fullWidth: true))
-                    .disabled(running || targets.isEmpty)
+                    .disabled(runningTask != nil || targets.isEmpty)
+                    if runningTask != nil {
+                        Button("Cancel") { runningTask?.cancel() }.buttonStyle(SecondaryButtonStyle())
+                    }
+                }
                 Text("Uses \(model.textProviderID.displayName) with your brand voice. Sends titles, filenames, and links; never images. You review everything before it publishes.")
                     .font(DS.caption).foregroundStyle(DS.text3)
                 if let error { Text(error).font(DS.small).foregroundStyle(DS.red) }
@@ -691,11 +810,15 @@ struct GenerateSection: View {
 
     private func run(_ targets: [Publication]) async {
         guard let provider = model.textProvider else { return }
-        running = true
         done = 0
+        failed = 0
         error = nil
-        defer { running = false }
+        defer { runningTask = nil }
         for p in targets {
+            if Task.isCancelled {
+                error = "Cancelled after \(done) of \(targets.count) posts."
+                break
+            }
             let asset = model.asset(p.assetID)
             let fromFilename = asset.map { BulkSession.titleFromFilename($0.filename) == p.title } ?? false
             if onlyEmpty && !(p.title.isEmpty || fromFilename || p.desc.isEmpty) { done += 1; continue }
@@ -705,15 +828,30 @@ struct GenerateSection: View {
                 let (copy, usage) = try await PostCopyGenerator.generate(req, provider: provider)
                 if !onlyEmpty || p.title.isEmpty || fromFilename { p.title = copy.title }
                 if !onlyEmpty || p.desc.isEmpty {
-                    p.desc = copy.description + (copy.hashtags.isEmpty ? "" : "\n\n" + copy.hashtags.prefix(5).map { "#" + $0 }.joined(separator: " "))
+                    let tags = copy.hashtags.prefix(5).map { "#" + $0 }.joined(separator: " ")
+                    var combined = copy.description + (tags.isEmpty ? "" : "\n\n" + tags)
+                    // Enforce platform body limit after appending hashtags.
+                    if let spec = PlatformRegistry.spec(p.platform) {
+                        let maxChars = ["description", "caption", "text", "commentary", "message"]
+                            .compactMap { spec.text[$0] }
+                            .first(where: \.enforced)?.max
+                        if let maxChars, combined.count > maxChars {
+                            combined = String(combined.prefix(max(0, maxChars - 1))) + "…"
+                        }
+                    }
+                    p.desc = combined
                 }
                 if p.altText.isEmpty { p.altText = copy.altText }
                 p.updatedAt = .now
+                p.invalidateApprovalIfChanged()
                 model.recordAI(kind: "text", prompt: "Copy for \(p.title)", usage: usage, ok: true)
-            } catch {
-                self.error = error.localizedDescription
-                model.recordAI(kind: "text", prompt: "Copy for \(p.title)", usage: nil, ok: false, detail: error.localizedDescription)
+            } catch AIError.cancelled {
+                error = "Cancelled after \(done) of \(targets.count) posts."
                 break
+            } catch {
+                failed += 1
+                self.error = "\(failed) failed (latest: \(error.localizedDescription))"
+                model.recordAI(kind: "text", prompt: "Copy for \(p.title)", usage: nil, ok: false, detail: error.localizedDescription)
             }
             done += 1
         }

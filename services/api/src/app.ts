@@ -33,6 +33,13 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
     reply.code(status).send({ error: status >= 500 ? 'internal_error' : 'bad_request', message: status >= 500 ? 'Something went wrong on the server.' : err.message })
   })
 
+  app.addHook('onSend', async (_req, reply, payload) => {
+    reply.header('X-Content-Type-Options', 'nosniff')
+    reply.header('Referrer-Policy', 'no-referrer')
+    reply.header('X-Frame-Options', 'DENY')
+    return payload
+  })
+
   // --- Public ---
 
   app.get('/health', async (_req, reply) => {
@@ -45,6 +52,13 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
   })
 
   app.get('/version', async () => ({ name: 'socialforge-api', version: svc.config.appVersion, commit: svc.config.commit }))
+
+  app.get('/v1/capabilities', async () => ({
+    apiVersion: 1,
+    platforms: ['pinterest'],
+    features: ['schedule', 'cancel', 'reconcile', 'media_upload'],
+    maxUploadBytes: 25 * 1_048_576,
+  }))
 
   // OAuth callback: bound to a one-time state, not to a bearer token (the browser has none).
   app.get<{ Params: { platform: string }, Querystring: { code?: string, state?: string, error?: string } }>(
@@ -117,7 +131,12 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
 
     v1.post<{ Params: { platform: string } }>('/accounts/:platform/connect', async (req, reply) => {
       const { platform } = req.params
-      if (platform !== 'pinterest') return reply.code(501).send({ error: 'not_available', message: `${platform} connections come in milestone 4.` })
+      if (platform !== 'pinterest') {
+        return reply.code(501).send({
+          error: 'not_available',
+          message: `The optional publishing service currently supports Pinterest only. Connect ${platform} directly on your Mac in Connections.`,
+        })
+      }
       const cfg = svc.config.pinterest
       if (!cfg) return reply.code(501).send({ error: 'not_configured', message: 'Set PINTEREST_CLIENT_ID and PINTEREST_CLIENT_SECRET on the publishing service to connect Pinterest.' })
       const state = randomToken()
@@ -138,10 +157,14 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
       if (actual !== req.params.sha256) return reply.code(400).send({ error: 'hash_mismatch', message: 'The upload does not match its SHA-256.' })
       const [existing] = await svc.db.select().from(media).where(and(eq(media.workspaceId, req.workspaceId), eq(media.sha256, actual)))
       if (existing) return { mediaId: existing.id, sha256: actual }
+      const rawType = (req.headers['content-type'] ?? '').split(';')[0].trim().toLowerCase()
+      if (!IMAGE_TYPES.includes(rawType)) {
+        return reply.code(415).send({ error: 'unsupported_media_type', message: `Send ${IMAGE_TYPES.join(', ')}.` })
+      }
       const key = `${req.workspaceId}/${actual}`
-      await svc.store.put(key, body, req.headers['content-type']!)
+      await svc.store.put(key, body, rawType)
       const [row] = await svc.db.insert(media).values({
-        workspaceId: req.workspaceId, sha256: actual, contentType: req.headers['content-type']!, bytes: body.length, storageKey: key,
+        workspaceId: req.workspaceId, sha256: actual, contentType: rawType, bytes: body.length, storageKey: key,
       }).onConflictDoNothing().returning()
       const id = row?.id ?? (await svc.db.select().from(media).where(and(eq(media.workspaceId, req.workspaceId), eq(media.sha256, actual))))[0].id
       return { mediaId: id, sha256: actual }
@@ -160,6 +183,7 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
           : account.status !== 'connected'
             ? [`The account is ${account.status}; reconnect it.`]
             : validatePublication(svc.specs.get(p.platform), p.payload, account.scopes, m ? { bytes: m.bytes, contentType: m.contentType } : null)
+        if (p.platform !== 'pinterest') errs.push(`The optional publishing service does not support ${p.platform}; publish from your Mac instead.`)
         if (p.mediaId && !m) errs.push('Unknown media.')
         if (account && account.platform !== p.platform) errs.push('The account is on another platform.')
         if (errs.length) { problems.push({ clientId: p.clientId, problems: errs }); continue }
@@ -181,11 +205,17 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
           payload: p.payload,
         }).onConflictDoNothing().returning()
         if (created) {
-          const jobId = await svc.boss.send(PUBLISH_QUEUE, { publicationId: created.id }, {
-            startAfter: created.scheduledAt, singletonKey: created.id,
-          })
-          await svc.db.update(publications).set({ jobId }).where(eq(publications.id, created.id))
-          out.push(created)
+          try {
+            const jobId = await svc.boss.send(PUBLISH_QUEUE, { publicationId: created.id }, {
+              startAfter: created.scheduledAt, singletonKey: created.id,
+            })
+            await svc.db.update(publications).set({ jobId }).where(eq(publications.id, created.id))
+            out.push(created)
+          } catch (err) {
+            // Roll back the orphaned row if pg-boss enqueue fails.
+            await svc.db.delete(publications).where(eq(publications.id, created.id)).catch(() => {})
+            throw err
+          }
         } else {
           const [existing] = await svc.db.select().from(publications)
             .where(and(eq(publications.workspaceId, req.workspaceId), eq(publications.idempotencyKey, p.idempotencyKey)))
@@ -205,6 +235,7 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
     })
 
     v1.get<{ Params: { id: string } }>('/publications/:id/attempts', async (req, reply) => {
+      if (!isUUID(req.params.id)) return reply.code(404).send({ error: 'not_found', message: 'No such publication.' })
       const [pub] = await svc.db.select().from(publications).where(and(eq(publications.id, req.params.id), eq(publications.workspaceId, req.workspaceId)))
       if (!pub) return reply.code(404).send({ error: 'not_found', message: 'No such publication.' })
       const rows = await svc.pool.query('select attempt, started_at, finished_at, outcome, http_status, provider_request_id, error from publication_attempts where publication_id = $1 order by attempt', [pub.id])
@@ -212,6 +243,7 @@ export async function buildApp (svc: Services, opts: { logger?: boolean } = {}):
     })
 
     v1.post<{ Params: { id: string } }>('/publications/:id/cancel', async (req, reply) => {
+      if (!isUUID(req.params.id)) return reply.code(404).send({ error: 'not_found', message: 'No such publication.' })
       const [pub] = await svc.db.update(publications).set({ status: 'canceled', updatedAt: new Date() })
         .where(and(eq(publications.id, req.params.id), eq(publications.workspaceId, req.workspaceId), inArray(publications.status, ['scheduled'])))
         .returning()
@@ -284,8 +316,12 @@ function publicationView (p: typeof publications.$inferSelect) {
   }
 }
 
+function isUUID (id: string) {
+  return /^[0-9a-f-]{36}$/i.test(id)
+}
+
 async function findAccount (svc: Services, workspaceId: string, id: string) {
-  if (!/^[0-9a-f-]{36}$/i.test(id)) return undefined
+  if (!isUUID(id)) return undefined
   const [a] = await svc.db.select().from(socialAccounts).where(and(eq(socialAccounts.id, id), eq(socialAccounts.workspaceId, workspaceId)))
   return a
 }

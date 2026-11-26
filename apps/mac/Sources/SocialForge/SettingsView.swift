@@ -149,14 +149,17 @@ struct PublishingSettings: View {
     @State private var token = ""
     @State private var clientID = ""
     @State private var clientSecret = ""
+    @State private var hasPinterestSecret = false
     @AppStorage("pinterest.apiBase") private var apiBase = "https://api.pinterest.com"
+    @AppStorage("publish.missedPolicy") private var missedPolicy = MissedPostPolicy.publishWhenAvailable.rawValue
+    @AppStorage("publish.missedWindowMinutes") private var missedWindowMinutes = 60
 
     var body: some View {
         @Bindable var model = model
         let _ = model.modeRevision
         SettingsGroup(title: "Publishing", footer: model.publishMode == .mac
-                      ? "This Mac publishes approved posts at their times. Nothing posts while the Mac is asleep or off; posts that came due go out when it wakes, marked late in Activity."
-                      : "The optional service in services/api keeps tokens and the queue on an always-on host, so posts go out while the Mac sleeps.") {
+                      ? "This Mac publishes approved posts at their times. Changing this preference never silently transfers already-scheduled posts between owners."
+                      : "The optional service in services/api keeps tokens and the queue on an always-on host, so supported posts go out while the Mac sleeps.") {
             PillPicker(options: PublishMode.allCases, selection: Binding(get: { model.publishMode }, set: { model.publishMode = $0 })) { $0.title }
             if model.publishMode == .mac {
                 Toggle("Publish while SocialForge is closed", isOn: Binding(
@@ -164,47 +167,53 @@ struct PublishingSettings: View {
                     set: { model.setHelper(enabled: $0) }))
                     .toggleStyle(SFToggleStyle()).font(DS.body)
                 Text(model.helperStatusText).font(DS.small).foregroundStyle(DS.text2)
+                Divider().overlay(DS.stroke)
+                Picker("When Mac wakes past a scheduled time", selection: $missedPolicy) {
+                    ForEach(MissedPostPolicy.allCases) { p in Text(p.title).tag(p.rawValue) }
+                }
+                .font(DS.body)
+                Stepper("Overdue threshold: \(missedWindowMinutes) min", value: $missedWindowMinutes, in: 5...720, step: 15)
+                    .font(DS.small).foregroundStyle(DS.text2)
             }
         }
         PlatformsSettingsGroup()
         if model.publishMode == .mac {
-            SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add http://127.0.0.1:8085/pinterest/callback as a redirect URI. The ID, secret, and tokens stay in your Keychain. Live publishing is built but not yet verified against Pinterest.") {
-                TextField("App ID", text: $clientID).fieldStyle().onSubmit { Keychain.write("pinterest.clientID", clientID) }
-                SecureField("App secret", text: $clientSecret).fieldStyle().onSubmit { Keychain.write("pinterest.clientSecret", clientSecret) }
+            SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add http://127.0.0.1:8085/pinterest/callback as a redirect URI. The ID, secret, and tokens stay in your Keychain.") {
+                TextField("App ID", text: $clientID).fieldStyle().onSubmit { savePinterest() }
+                SecureField(hasPinterestSecret ? "App secret saved · paste to replace" : "App secret", text: $clientSecret).fieldStyle().onSubmit { savePinterest() }
                 PillPicker(options: ["https://api.pinterest.com", "https://api-sandbox.pinterest.com"], selection: $apiBase) { $0.contains("sandbox") ? "Sandbox (Trial access)" : "Production" }
                 HStack {
-                    Button("Save to Keychain") {
-                        Keychain.write("pinterest.clientID", clientID)
-                        Keychain.write("pinterest.clientSecret", clientSecret)
-                    }
-                    .buttonStyle(SecondaryButtonStyle())
+                    Button("Save to Keychain") { savePinterest() }.buttonStyle(SecondaryButtonStyle())
                     Button("Connect Pinterest") {
-                        Keychain.write("pinterest.clientID", clientID)
-                        Keychain.write("pinterest.clientSecret", clientSecret)
+                        savePinterest()
                         Task { await model.connectPinterestOnMac() }
                     }
                     .buttonStyle(PrimaryButtonStyle())
-                    .disabled(clientID.isEmpty || clientSecret.isEmpty)
+                    .disabled(clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (clientSecret.isEmpty && !hasPinterestSecret))
                 }
             }
             .onAppear {
                 clientID = Keychain.read("pinterest.clientID") ?? ""
-                clientSecret = Keychain.read("pinterest.clientSecret") ?? ""
+                hasPinterestSecret = Keychain.read("pinterest.clientSecret")?.isEmpty == false
             }
             MetaPublishingSettings()
         } else {
             SettingsGroup(title: "Publishing service", footer: "Run it with `npm run dev:local` in services/api (plain Node and PostgreSQL). The token is stored in your Keychain.") {
                 TextField("http://127.0.0.1:8787", text: $model.backendURLString).fieldStyle().onSubmit { Task { await model.checkBackend() } }
-                SecureField("Access token", text: $token).fieldStyle().onSubmit { model.token = token }
+                SecureField(model.hasBackendToken ? "Access token saved · paste to replace" : "Access token", text: $token).fieldStyle()
+                    .onSubmit { saveBackendToken() }
                 HStack {
                     Button("Check") {
-                        model.token = token
+                        saveBackendToken()
                         Task {
                             await model.checkBackend()
                             if case .up = model.backendStatus { await model.refreshAccounts() }
                         }
                     }
                     .buttonStyle(SecondaryButtonStyle())
+                    if model.hasBackendToken {
+                        Button("Clear Token") { model.token = ""; token = "" }.buttonStyle(SecondaryButtonStyle())
+                    }
                     switch model.backendStatus {
                     case .unknown: EmptyView()
                     case .checking: ProgressView().controlSize(.small)
@@ -212,7 +221,28 @@ struct PublishingSettings: View {
                     case .down(let why): StatusDot(text: why, color: DS.red)
                     }
                 }
+                if let caps = model.backendCapabilities {
+                    Text("Remote service supports: \(caps.platforms.joined(separator: ", ")). Other platforms continue to publish directly from this Mac.")
+                        .font(DS.small).foregroundStyle(DS.text2)
+                }
             }
+        }
+    }
+
+    private func savePinterest() {
+        Keychain.write("pinterest.clientID", clientID.trimmingCharacters(in: .whitespacesAndNewlines))
+        let sec = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sec.isEmpty { Keychain.write("pinterest.clientSecret", sec); clientSecret = "" }
+        hasPinterestSecret = Keychain.read("pinterest.clientSecret")?.isEmpty == false
+        model.modeRevision += 1
+    }
+
+    private func saveBackendToken() {
+        let clean = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Never wipe a previously saved Keychain token just because the blank SecureField wasn't re-entered.
+        if !clean.isEmpty {
+            model.token = clean
+            token = ""
         }
     }
 }
@@ -285,17 +315,17 @@ struct ProviderSettings: View {
         model.aiStudio.verified[id] = nil
     }
 
-    /// One tiny request to prove the key and model work.
+    /// One tiny request to prove the key and model work (32 tokens accommodates reasoning models).
     private func test() async {
         guard let config = model.aiConfigs[id], let p = makeTextProvider(config, apiKey: model.aiKey(id)) else { return }
         testing = true
         defer { testing = false }
         do {
-            let r = try await p.complete(system: "Reply with the single word OK.", user: "Say OK.", maxTokens: 8)
+            let r = try await p.complete(system: "Reply with the single word OK.", user: "Say OK.", maxTokens: 32)
             model.aiStudio.verified[id] = r.text.isEmpty ? "Empty answer" : "Verified"
-            model.recordAI(kind: "text", prompt: "Connection test (\(id.displayName))", usage: r.usage, ok: true)
+            model.recordAI(kind: "text", prompt: "Connection test (\(id.displayName))", usage: r.usage, ok: true, providerName: id.displayName)
         } catch {
-            model.aiStudio.verified[id] = error.localizedDescription
+            model.aiStudio.verified[id] = DiagnosticRedactor.sanitize(error.localizedDescription)
         }
     }
 }
@@ -304,27 +334,46 @@ struct ComfyUISettings: View {
     @Environment(AppModel.self) private var model
     @AppStorage("comfy.url") private var url = "http://127.0.0.1:8188"
     @State private var token = ""
+    @State private var hasToken = false
 
     var body: some View {
-        SettingsGroup(title: "ComfyUI", footer: "Uses ComfyUI's HTTP and WebSocket API: /system_stats, /object_info, /prompt, /history, /view, /interrupt. Remote servers must use HTTPS; add a token if your server or proxy requires one. Import your own workflows (Save → API Format) in AI Studio.") {
+        SettingsGroup(title: "ComfyUI", footer: "Uses ComfyUI's HTTP and WebSocket API: /system_stats, /object_info, /prompt, /history, /view, /queue. Remote servers must use HTTPS; add a bearer token if your server or proxy requires one.") {
             HStack {
-                TextField("http://127.0.0.1:8188", text: $url).fieldStyle().onSubmit { Task { await model.checkComfy() } }
-                Button("Test Connection") {
-                    Task {
-                        await model.checkComfy()
-                        await model.aiStudio.loadCheckpoints(model: model)
-                    }
-                }
-                .buttonStyle(SecondaryButtonStyle())
+                TextField("http://127.0.0.1:8188", text: $url).fieldStyle().onSubmit { saveAndTest() }
+                Button("Test Connection") { saveAndTest() }.buttonStyle(SecondaryButtonStyle())
             }
             if let u = URL(string: url), let problem = ComfyUIClient.transportProblem(u) { Text(problem).font(DS.small).foregroundStyle(DS.red) }
-            SecureField(Keychain.read("comfy.token")?.isEmpty == false ? "Token saved · paste to replace" : "Optional bearer token", text: $token).fieldStyle()
-                .onSubmit { Keychain.write("comfy.token", token); token = "" }
+            HStack {
+                SecureField(hasToken ? "Token saved · paste to replace" : "Optional bearer token", text: $token).fieldStyle()
+                    .onSubmit { saveToken() }
+                Button("Save Token") { saveToken() }.buttonStyle(SecondaryButtonStyle()).disabled(token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                if hasToken {
+                    Button("Clear") { Keychain.write("comfy.token", ""); hasToken = false }.buttonStyle(SecondaryButtonStyle())
+                }
+            }
             HStack {
                 StatusDot(text: model.comfyState.isConnected ? "Connected · \(model.comfyState.detail)" : model.comfyState.detail, color: model.comfyState.color)
                 Spacer()
                 if !model.aiStudio.checkpoints.isEmpty { Text("\(model.aiStudio.checkpoints.count) checkpoints").font(DS.small).foregroundStyle(DS.text2) }
             }
+        }
+        .onAppear { hasToken = Keychain.read("comfy.token")?.isEmpty == false }
+    }
+
+    private func saveToken() {
+        let clean = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !clean.isEmpty else { return }
+        Keychain.write("comfy.token", clean)
+        token = ""
+        hasToken = true
+    }
+
+    private func saveAndTest() {
+        url = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        saveToken()
+        Task {
+            await model.checkComfy()
+            await model.aiStudio.loadCheckpoints(model: model)
         }
     }
 }

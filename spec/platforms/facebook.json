@@ -13,12 +13,7 @@
     {
       "title": "Reels Publishing API",
       "url": "https://developers.facebook.com/documentation/video-api/guides/reels-publishing",
-      "checked": "2026-11-19"
-    },
-    {
-      "title": "Reels Publishing API",
-      "url": "https://developers.facebook.com/docs/video-api/guides/reels-publishing",
-      "checked": "2026-11-19"
+      "checked": "2026-11-26"
     }
   ],
   "contentTypes": [
@@ -86,6 +81,7 @@
     "audio": [
       "aac"
     ],
+    "maxBytes": 1073741824,
     "minSeconds": 3,
     "maxSeconds": 90,
     "recommended": {

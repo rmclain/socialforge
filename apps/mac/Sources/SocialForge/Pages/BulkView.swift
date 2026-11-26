@@ -66,11 +66,15 @@ extension BulkSession {
     }
 
     /// What "Save draft" would create, so the queue shows the run before anything is stored.
-    func preview(_ assets: [MediaAsset]) -> [PreviewRow] {
-        let ambiguous = Set(report?.ambiguous.keys.map { $0 } ?? [])
+    /// Uses `after: existingQueueEnd` so preview slots match created post timestamps exactly.
+    @MainActor
+    func preview(_ assets: [MediaAsset], model: AppModel) -> [PreviewRow] {
+        let ambiguous = useCSV ? Set(report?.ambiguous.keys.map { $0 } ?? []) : []
         let rows = Dictionary((report?.matched ?? []).map { ($0.mediaID, $0) }, uniquingKeysWith: { a, _ in a })
         let usable = assets.filter { !ambiguous.contains($0.uuid.uuidString) }
-        let slots = (try? ScheduleBuilder.slots(rule, count: usable.count)) ?? []
+        let primaryID = selectedAccountIDs.first ?? accountID
+        let after = existingQueueEnd(model: model, accountID: primaryID)
+        let slots = (try? ScheduleBuilder.slots(rule, count: usable.count, after: after)) ?? []
         var slotFor: [UUID: Date] = [:]
         for (a, s) in zip(usable, slots) { slotFor[a.uuid] = s.instant }
         return assets.map { a in
@@ -81,12 +85,15 @@ extension BulkSession {
         }
     }
 
-    /// "Winter Collection → Pinterest · Every day at 9:00 AM".
+    /// "Winter Collection → Pinterest, Instagram · Every day at 9:00 AM".
     @MainActor
     func sentence(model: AppModel) -> String {
-        let acct = model.accounts.first { $0.serverID == accountID }
+        let targets = targetAccounts(model: model)
         var s = assetIDs.isEmpty ? "No run yet" : runName
-        if let acct { s += " → " + (PlatformRegistry.spec(acct.platform)?.name ?? acct.platform) }
+        if !targets.isEmpty {
+            let names = targets.map { PlatformRegistry.spec($0.platform)?.name ?? $0.platform }.joined(separator: ", ")
+            s += " → " + names
+        }
         let times = rule.times.map(\.label).joined(separator: ", ")
         if rule.onlyDays != nil {
             s += " · \(rule.onlyDays?.count ?? 0) picked dates at \(times)"
@@ -185,7 +192,7 @@ struct BulkView: View {
                 }
                 .frame(maxWidth: .infinity, minHeight: 180)
             } else {
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Space.sm), count: 15), spacing: Space.sm) {
+                LazyVGrid(columns: [GridItem(.adaptive(minimum: 56, maximum: 76), spacing: Space.sm)], spacing: Space.sm) {
                     ForEach(Array(runAssets.enumerated()), id: \.element.uuid) { i, a in
                         RunTile(asset: a, index: i + 1, state: matchState(a))
                             .draggable(a.uuid.uuidString)
@@ -217,12 +224,25 @@ struct BulkView: View {
 
     @ViewBuilder
     private var queueSection: some View {
-        let preview = queue.isEmpty ? bulk.preview(runAssets) : []
+        let preview = runAssets.isEmpty ? [] : bulk.preview(runAssets, model: model)
+        let targetPlatforms = bulk.targetAccounts(model: model).map(\.platform)
+        let failed = allPubs.filter { $0.workspaceID == model.workspaceID && [.failed, .authRequired, .actionRequired].contains($0.status) }
+        let duplicateNotes = PostValidator.duplicates(queue.map {
+            (id: $0.uuid.uuidString, imageHash: model.asset($0.assetID)?.sha256, link: $0.link)
+        })
         VStack(alignment: .leading, spacing: 0) {
             HStack(spacing: Space.sm) {
                 Text("Queue").font(.system(size: 15, weight: .semibold))
                 Text(queueSubtitle(preview: preview)).font(DS.body).foregroundStyle(DS.text2)
                 Spacer()
+                if !failed.isEmpty {
+                    Button("Retry Failed (\(failed.count))") {
+                        for p in failed { model.retryPublication(p) }
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                    Button("Export Errors CSV…") { exportErrorsCSV(failed) }
+                        .buttonStyle(SecondaryButtonStyle())
+                }
                 if !queue.isEmpty {
                     Button("Reschedule") {
                         do { try bulk.reschedule(queue.filter { $0.status.isLocal }) } catch { model.lastError = "\(error)" }
@@ -243,9 +263,35 @@ struct BulkView: View {
                         .font(DS.small).foregroundStyle(DS.amber).padding(.bottom, Space.sm)
                 }
             }
+            if let r = bulk.report, !r.rowWarnings.isEmpty {
+                ForEach(r.rowWarnings.keys.sorted(), id: \.self) { id in
+                    ForEach(r.rowWarnings[id] ?? [], id: \.self) { msg in
+                        Label(msg, systemImage: "exclamationmark.triangle.fill")
+                            .font(DS.small).foregroundStyle(DS.amber).padding(.bottom, Space.xs)
+                    }
+                }
+            }
+            if !duplicateNotes.isEmpty {
+                Label("\(duplicateNotes.count) possible duplicate post\(duplicateNotes.count == 1 ? "" : "s") detected in the queue.", systemImage: "doc.on.doc")
+                    .font(DS.small).foregroundStyle(DS.amber).padding(.bottom, Space.sm)
+            }
+            if let picked = bulk.rule.onlyDays, !runAssets.isEmpty, picked.count * max(1, bulk.rule.times.count) < runAssets.count {
+                Label("Only \(picked.count * max(1, bulk.rule.times.count)) slot(s) picked for \(runAssets.count) assets. Pick more dates or times so every asset gets a slot.", systemImage: "calendar.badge.exclamationmark")
+                    .font(DS.small).foregroundStyle(DS.amber).padding(.bottom, Space.sm)
+            }
             Divider().overlay(DS.stroke)
             if queue.isEmpty && preview.isEmpty {
                 Text("Add images to see the run here.").foregroundStyle(DS.text2).padding(.vertical, Space.xl)
+            }
+            if !preview.isEmpty {
+                if !queue.isEmpty {
+                    Text("Upcoming preview (\(preview.count) staged — click Save draft in the inspector)").font(DS.caption).foregroundStyle(DS.accent).padding(.vertical, Space.sm)
+                }
+                ForEach(preview) { r in
+                    QueueRow(thumb: r.asset.storedPath, title: r.title, link: r.link, when: r.when, platforms: targetPlatforms.isEmpty ? ["pinterest"] : targetPlatforms,
+                             status: nil, issues: r.ambiguous ? 1 : 0, selected: false)
+                    Divider().overlay(DS.stroke)
+                }
             }
             ForEach(queue) { p in
                 QueueRow(thumb: model.asset(p.assetID)?.storedPath, title: p.title, link: p.link, when: p.scheduledAt,
@@ -256,12 +302,23 @@ struct BulkView: View {
                     .contextMenu { PublicationMenu(ids: model.publicationSelection.contains(p.id) ? model.publicationSelection : [p.id]) }
                 Divider().overlay(DS.stroke)
             }
-            ForEach(preview) { r in
-                QueueRow(thumb: r.asset.storedPath, title: r.title, link: r.link, when: r.when, platforms: bulk.accountID == nil ? [] : ["pinterest"],
-                         status: nil, issues: r.ambiguous ? 1 : 0, selected: false)
-                Divider().overlay(DS.stroke)
-            }
         }
+    }
+
+    private func exportErrorsCSV(_ failed: [Publication]) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = "socialforge-bulk-errors.csv"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        func esc(_ s: String) -> String {
+            var safe = s
+            if let f = safe.first, "=+-@\t\r".contains(f) { safe = "'" + safe }
+            return "\"" + safe.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+        }
+        var lines = ["id,platform,account,title,scheduled_at,status,error"]
+        for p in failed {
+            lines.append([p.uuid.uuidString, p.platform, p.accountName, p.title, AgentTools.iso(p.scheduledAt), p.statusRaw, p.lastError ?? ""].map(esc).joined(separator: ","))
+        }
+        try? lines.joined(separator: "\n").write(to: url, atomically: true, encoding: .utf8)
     }
 
     private func queueSubtitle(preview: [BulkSession.PreviewRow]) -> String {
@@ -478,12 +535,16 @@ struct BulkInspector: View {
 struct BulkPipelinePanel: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Publication.scheduledAt) private var allPubs: [Publication]
+    @Query(sort: \Campaign.name) private var allCampaigns: [Campaign]
     @Query private var allAssets: [MediaAsset]
     @State private var startDate = Calendar.current.date(byAdding: .day, value: 1, to: .now)!
     @State private var customTime = Calendar.current.date(bySettingHour: 18, minute: 0, second: 0, of: .now)!
     @State private var confirmSchedule = false
     @State private var result: String?
     @State private var showMapping = false
+    @State private var showSaveRecipe = false
+    @State private var recipeName = ""
+    @State private var recipes: [BulkSession.Recipe] = BulkSession.savedRecipes()
 
     private var bulk: BulkSession { model.bulk }
     private var queue: [Publication] { allPubs.filter { $0.workspaceID == model.workspaceID && $0.status.isLocal } }
@@ -527,56 +588,83 @@ struct BulkPipelinePanel: View {
         .alert("Schedule", isPresented: Binding(get: { result != nil }, set: { if !$0 { result = nil } })) {
             Button("OK") { result = nil }
         } message: { Text(result ?? "") }
+        .alert("Save Bulk Recipe", isPresented: $showSaveRecipe) {
+            TextField("Recipe name", text: $recipeName)
+            Button("Save") {
+                bulk.saveRecipe(name: recipeName)
+                recipes = BulkSession.savedRecipes()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("Saves cadence, image preset, and CSV mode for reuse.") }
     }
 
     private var postTo: some View {
         @Bindable var bulk = model.bulk
-        let pins = model.accounts.filter { $0.platform == "pinterest" }
+        let accounts = model.accounts
         return VStack(alignment: .leading, spacing: Space.md) {
-            SectionLabel("Post to")
-            ForEach(pins) { a in
+            HStack {
+                SectionLabel("Post to")
+                Spacer()
+                Menu("Recipes") {
+                    Button("Save Current as Recipe…") { recipeName = bulk.runName; showSaveRecipe = true }
+                    if !recipes.isEmpty {
+                        Divider()
+                        ForEach(recipes) { r in
+                            Button(r.name) { bulk.applyRecipe(r); syncDates() }
+                        }
+                    }
+                }
+                .menuStyle(.button).buttonStyle(LinkButtonStyle()).fixedSize()
+            }
+            ForEach(accounts) { a in
+                let isSelected = bulk.selectedAccountIDs.contains(a.serverID) || (bulk.selectedAccountIDs.isEmpty && bulk.accountID == a.serverID)
                 HStack(spacing: Space.md) {
-                    PlatformBadge(platform: "pinterest", size: 28)
+                    PlatformBadge(platform: a.platform, size: 28)
                     VStack(alignment: .leading, spacing: 1) {
                         Text(a.name + (a.isMock ? " (mock)" : "")).font(DS.bodyMedium)
-                        Menu {
-                            ForEach(model.boards[a.serverID] ?? []) { b in Button(b.name) { bulk.accountID = a.serverID; bulk.boardID = b.id } }
-                            Button("Reload Boards") { Task { await model.refreshAccounts() } }
-                        } label: {
-                            Text("Board · " + ((model.boards[a.serverID] ?? []).first { $0.id == bulk.boardID }?.name ?? "Choose…"))
+                        if a.platform == "pinterest" {
+                            Menu {
+                                ForEach(model.boards[a.serverID] ?? []) { b in Button(b.name) { bulk.accountID = a.serverID; bulk.selectedAccountIDs.insert(a.serverID); bulk.boardID = b.id } }
+                                Button("Reload Boards") { Task { await model.refreshAccounts() } }
+                            } label: {
+                                Text("Board · " + ((model.boards[a.serverID] ?? []).first { $0.id == bulk.boardID }?.name ?? "Choose…"))
+                                    .font(DS.small).foregroundStyle(DS.text2)
+                            }
+                            .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
+                        } else {
+                            Text(PlatformRegistry.spec(a.platform)?.name ?? a.platform.capitalized)
                                 .font(DS.small).foregroundStyle(DS.text2)
                         }
-                        .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize()
                     }
                     Spacer()
-                    Toggle("", isOn: Binding(get: { bulk.accountID == a.serverID }, set: { bulk.accountID = $0 ? a.serverID : nil }))
+                    Toggle("", isOn: Binding(get: { isSelected }, set: { on in
+                        if on {
+                            bulk.selectedAccountIDs.insert(a.serverID)
+                            if bulk.accountID == nil { bulk.accountID = a.serverID }
+                        } else {
+                            bulk.selectedAccountIDs.remove(a.serverID)
+                            if bulk.accountID == a.serverID { bulk.accountID = bulk.selectedAccountIDs.first }
+                        }
+                    }))
                         .toggleStyle(SFToggleStyle()).labelsHidden().fixedSize()
                 }
                 ForEach(a.capabilities.filter { !$0.allowed }, id: \.contentType.id) { c in
                     Label(c.reason ?? "", systemImage: "lock.fill").font(DS.small).foregroundStyle(DS.amber)
                 }
             }
-            if pins.isEmpty {
+            if accounts.isEmpty {
                 HStack {
-                    Text("No Pinterest account yet.").font(DS.body).foregroundStyle(DS.text2)
+                    Text("No social accounts connected yet.").font(DS.body).foregroundStyle(DS.text2)
                     Spacer()
                     Button("Add Mock") { model.addMockAccount() }.buttonStyle(SecondaryButtonStyle())
                     Button("Connect") { model.page = .accounts }.buttonStyle(SecondaryButtonStyle())
                 }
             }
-            ForEach(["facebook", "x", "linkedin"], id: \.self) { p in
-                HStack(spacing: Space.md) {
-                    PlatformBadge(platform: p, size: 28)
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(PlatformRegistry.spec(p)?.name ?? p).font(DS.bodyMedium).foregroundStyle(DS.text2)
-                        Text(PlatformRegistry.spec(p)?.isAvailable == true ? "Bulk makes Pins; post to \(PlatformRegistry.spec(p)?.name ?? p) from Composer"
-                                                                           : "Drafts only: posting isn't built yet")
-                            .font(DS.small).foregroundStyle(DS.text3)
-                    }
-                    Spacer()
-                    Toggle("", isOn: .constant(false)).toggleStyle(SFToggleStyle()).labelsHidden().fixedSize().disabled(true).opacity(0.4)
-                }
+            Picker("Campaign", selection: $bulk.campaignID) {
+                Text("None").tag(UUID?.none)
+                ForEach(allCampaigns.filter { $0.workspaceID == model.workspaceID }) { Text($0.name).tag(UUID?.some($0.uuid)) }
             }
+            .font(DS.body)
         }
     }
 
@@ -663,11 +751,12 @@ struct BulkPipelinePanel: View {
             SectionLabel("Optimize")
             Picker("Image", selection: $bulk.presetID) {
                 Text("Original image").tag(String?.none)
-                ForEach(ExportPreset.builtIn.filter { $0.platform == "pinterest" }) { Text($0.name).tag(String?.some($0.id)) }
+                ForEach(ExportPreset.builtIn) { Text($0.name).tag(String?.some($0.id)) }
             }
             .pickerStyle(.menu)
             if let id = bulk.presetID, let preset = ExportPreset.builtIn.first(where: { $0.id == id }) {
-                let missing = runAssets.filter { a in !model.variants(of: a.uuid).contains { $0.presetID == id } }
+                let byAsset = model.variantsByAsset()
+                let missing = runAssets.filter { a in !(byAsset[a.uuid] ?? []).contains { $0.presetID == id } }
                 HStack {
                     Text("\(runAssets.count - missing.count) of \(runAssets.count) ready").font(DS.small).foregroundStyle(DS.text2)
                     Spacer()
@@ -703,7 +792,7 @@ struct BulkPipelinePanel: View {
     }
 
     private var footer: some View {
-        let preview = queue.isEmpty ? bulk.preview(runAssets) : []
+        let preview = queue.isEmpty ? bulk.preview(runAssets, model: model) : []
         let dates = queue.isEmpty ? preview.compactMap(\.when) : queue.map(\.scheduledAt)
         let f = Date.FormatStyle().weekday(.abbreviated).month(.abbreviated).day()
         return VStack(alignment: .leading, spacing: Space.md) {
@@ -724,10 +813,8 @@ struct BulkPipelinePanel: View {
     }
 
     private func saveDraft() {
-        let acct = model.accounts.first { $0.serverID == bulk.accountID }
-        let board = model.boards[bulk.accountID ?? ""]?.first { $0.id == bulk.boardID }
         do {
-            let made = try bulk.createPosts(model: model, assets: runAssets, account: acct, board: board)
+            let made = try bulk.createPostsForSelectedAccounts(model: model, assets: runAssets)
             if !made.isEmpty { bulk.assetIDs = [] }
         } catch {
             model.lastError = "Could not build the schedule: \(error)"

@@ -54,6 +54,10 @@ if let index = paths.firstIndex(of: "--unit"), index + 1 < paths.count, let valu
     paths.removeSubrange(index...(index + 1))
 }
 
+if paths.isEmpty {
+    print("FAIL: no layout JSON files specified")
+    exit(1)
+}
 var failedFiles = 0
 for path in paths {
     guard let data = FileManager.default.contents(atPath: path),

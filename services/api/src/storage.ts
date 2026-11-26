@@ -1,5 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { dirname, resolve, sep } from 'node:path'
 import { GetObjectCommand, PutObjectCommand, S3Client } from '@aws-sdk/client-s3'
 import type { Config } from './config.ts'
 
@@ -9,17 +9,26 @@ export interface MediaStore {
   get (key: string): Promise<Buffer>
 }
 
+function safePath (baseDir: string, key: string): string {
+  const root = resolve(baseDir)
+  const target = resolve(root, key)
+  if (target !== root && !target.startsWith(root + sep)) {
+    throw new Error('Invalid storage key path')
+  }
+  return target
+}
+
 export function createStore (cfg: Config['storage']): MediaStore {
   if (cfg.kind === 'fs') {
     return {
       async put (key, body) {
-        const path = join(cfg.dir, key)
+        const path = safePath(cfg.dir, key)
         await mkdir(dirname(path), { recursive: true })
         const tmp = `${path}.${process.pid}.part`
         await writeFile(tmp, body)
         await rename(tmp, path)
       },
-      async get (key) { return readFile(join(cfg.dir, key)) },
+      async get (key) { return readFile(safePath(cfg.dir, key)) },
     }
   }
   const s3 = new S3Client({

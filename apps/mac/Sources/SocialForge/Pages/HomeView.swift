@@ -6,14 +6,26 @@ struct HomeView: View {
     @Environment(AppModel.self) private var model
     @Query(sort: \Publication.scheduledAt) private var allPubs: [Publication]
     @Query(sort: \ActivityEntry.at, order: .reverse) private var allActivity: [ActivityEntry]
+    @State private var activityFilter = "all"
+    @AppStorage("home.checklist.dismissed") private var checklistDismissed = false
 
     private var pubs: [Publication] { allPubs.filter { $0.workspaceID == model.workspaceID } }
     private var upcoming: [Publication] {
-        pubs.filter { [.approved, .scheduled, .preparing, .publishing].contains($0.status) && $0.scheduledAt >= .now }
+        pubs.filter { [.scheduled, .preparing, .uploading, .awaitingProcessing, .publishing, .verifying].contains($0.status) && $0.scheduledAt >= .now }
+    }
+    private var approvedUnscheduled: [Publication] {
+        pubs.filter { $0.status == .approved }
     }
     private var review: [Publication] { pubs.filter { $0.status == .needsReview } }
-    private var failed: [Publication] { pubs.filter { $0.status == .failed } }
-    private var activity: [ActivityEntry] { Array(allActivity.filter { $0.workspaceID == model.workspaceID }.prefix(6)) }
+    private var attention: [Publication] { pubs.filter { [.failed, .authRequired, .actionRequired, .outcomeUnknown].contains($0.status) } }
+    private var badAccounts: [SocialAccount] {
+        model.accounts.filter { [.reauthRequired, .revoked, .missingPermissions, .configurationError].contains($0.connectionStatus) }
+    }
+    private var activity: [ActivityEntry] {
+        Array(allActivity.filter {
+            $0.workspaceID == model.workspaceID && (activityFilter == "all" || $0.category == activityFilter)
+        }.prefix(8))
+    }
 
     var body: some View {
         ScrollView {
@@ -24,6 +36,41 @@ struct HomeView: View {
                     Text(summary).font(.system(size: 15)).foregroundStyle(DS.text2)
                 }
                 .gridProbe("home.title", area: "home")
+
+                if !badAccounts.isEmpty || !attention.isEmpty || !approvedUnscheduled.isEmpty {
+                    HStack(spacing: Space.md) {
+                        if !badAccounts.isEmpty {
+                            attentionBanner(
+                                title: "\(badAccounts.count) connection\(badAccounts.count == 1 ? "" : "s") need\(badAccounts.count == 1 ? "s" : "") attention",
+                                detail: badAccounts.map(\.name).joined(separator: ", "),
+                                color: DS.red, action: "Open Connections"
+                            ) { model.page = .accounts }
+                        }
+                        if !attention.isEmpty {
+                            attentionBanner(
+                                title: "\(attention.count) post\(attention.count == 1 ? "" : "s") need\(attention.count == 1 ? "s" : "") attention",
+                                detail: attention.first?.lastError ?? "Check failures or unknown outcomes.",
+                                color: DS.amber, action: "Open Queue"
+                            ) {
+                                model.publicationSelection = [attention[0].id]
+                                model.page = .calendar
+                            }
+                        }
+                        if !approvedUnscheduled.isEmpty {
+                            attentionBanner(
+                                title: "\(approvedUnscheduled.count) approved (not yet scheduled)",
+                                detail: "Approved posts wait until you schedule them.",
+                                color: DS.accent, action: "Schedule All"
+                            ) { Task { _ = await model.activate(approvedUnscheduled) } }
+                        }
+                    }
+                    .gridProbe("home.attention", area: "home")
+                }
+
+                if !checklistDismissed && (model.accounts.isEmpty || pubs.isEmpty) {
+                    setupChecklist
+                        .gridProbe("home.checklist", area: "home")
+                }
 
                 VStack(alignment: .leading, spacing: Space.md) {
                     HStack {
@@ -66,7 +113,17 @@ struct HomeView: View {
                     .card(padding: Space.xl)
 
                     VStack(alignment: .leading, spacing: Space.md) {
-                        Text("Activity").font(.system(size: 15, weight: .semibold))
+                        HStack {
+                            Text("Activity").font(.system(size: 15, weight: .semibold))
+                            Spacer()
+                            Picker("", selection: $activityFilter) {
+                                Text("All").tag("all")
+                                Text("Publishing").tag("publishing")
+                                Text("Connections").tag("connection")
+                                Text("Agents").tag("agent")
+                            }
+                            .labelsHidden().fixedSize()
+                        }
                         if activity.isEmpty {
                             Text("Imports, schedules, and results show up here.").foregroundStyle(DS.text2)
                         }
@@ -92,6 +149,53 @@ struct HomeView: View {
         }
     }
 
+    private func attentionBanner(title: String, detail: String, color: Color, action: String, run: @escaping () -> Void) -> some View {
+        VStack(alignment: .leading, spacing: Space.xs) {
+            HStack(spacing: Space.xs) {
+                Circle().fill(color).frame(width: 8, height: 8)
+                Text(title).font(DS.bodyMedium)
+            }
+            Text(detail).font(DS.small).foregroundStyle(DS.text2).lineLimit(2)
+            Button(action, action: run).buttonStyle(LinkButtonStyle())
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .card(padding: Space.md)
+    }
+
+    private var setupChecklist: some View {
+        let hasBrand = model.brandKit != nil
+        let hasAccount = !model.accounts.isEmpty
+        let hasAI = AIProviderID.allCases.contains { model.isConfigured($0) }
+        let hasPost = !pubs.isEmpty
+        return VStack(alignment: .leading, spacing: Space.sm) {
+            HStack {
+                Text("Quick Setup Checklist").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                Button("Dismiss") { checklistDismissed = true }.buttonStyle(.plain).font(DS.small).foregroundStyle(DS.text3)
+            }
+            HStack(spacing: Space.md) {
+                checkStep("Brand kit", done: hasBrand) { model.page = .brandKits }
+                checkStep("Social account", done: hasAccount) { model.page = .accounts }
+                checkStep("AI or ComfyUI", done: hasAI) { model.page = .accounts }
+                checkStep("First post", done: hasPost) { model.page = .composer }
+            }
+        }
+        .card(padding: Space.lg)
+    }
+
+    private func checkStep(_ title: String, done: Bool, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            HStack(spacing: Space.xs) {
+                Image(systemName: done ? "checkmark.circle.fill" : "circle")
+                    .foregroundStyle(done ? DS.green : DS.text3)
+                Text(title).font(DS.body).foregroundStyle(done ? DS.text2 : DS.text)
+            }
+            .padding(.horizontal, Space.md).frame(height: 32)
+            .background(DS.fill, in: RoundedRectangle(cornerRadius: DS.radiusControl))
+        }
+        .buttonStyle(.plain)
+    }
+
     private func dotColor(_ symbol: String) -> Color {
         if symbol.contains("exclamation") { return DS.red }
         if symbol.contains("checkmark") { return DS.green }
@@ -107,14 +211,14 @@ struct HomeView: View {
     }
 
     private var summary: String {
-        if pubs.isEmpty { return "Import images and a CSV in Bulk Publisher to plan your first run." }
-        var s = "\(upcoming.count) posts are queued"
+        if pubs.isEmpty { return "Import images and a CSV in Bulk Publisher or draft a post in Composer to get started." }
+        var s = "\(upcoming.count) scheduled"
         if let last = upcoming.last { s += " through \(last.scheduledAt.formatted(.dateTime.month(.wide).day()))" }
         s += "."
         if let first = review.first {
-            s += " \(review.count) need\(review.count == 1 ? "s" : "") your approval before \(first.scheduledAt.formatted(.dateTime.month(.abbreviated).day()))."
+            s += " \(review.count) awaiting review before \(first.scheduledAt.formatted(.dateTime.month(.abbreviated).day()))."
         }
-        if !failed.isEmpty { s += " \(failed.count) failed." }
+        if !attention.isEmpty { s += " \(attention.count) need attention." }
         return s
     }
 }
@@ -163,13 +267,14 @@ struct ApprovalRow: View {
                 model.page = .calendar
             }
             .buttonStyle(SecondaryButtonStyle())
-            Button("Approve") {
+            Button("Approve & Schedule") {
                 pub.status = .approved
                 try? model.context.save()
+                Task { _ = await model.activate([pub]) }
             }
             .buttonStyle(SecondaryButtonStyle(tint: DS.green))
             .disabled(hasErrors)
-            .help(hasErrors ? "Fix the problems first (Review)" : "Approve this post")
+            .help(hasErrors ? "Fix the problems first (Review)" : "Approve and schedule this post for publishing")
         }
         .padding(.vertical, Space.md)
     }
@@ -254,7 +359,8 @@ struct HomeInspector: View {
             })
         }
         let mine = allAssets.filter { $0.workspaceID == model.workspaceID && $0.kind == "image" }
-        let noVariant = mine.filter { a in !model.variants(of: a.uuid).contains { $0.presetID == "pinterest-2x3" } }
+        let byAsset = model.variantsByAsset()
+        let noVariant = mine.filter { a in !(byAsset[a.uuid] ?? []).contains { $0.presetID == "pinterest-2x3" } }
         let wrongRatio = noVariant.filter { $0.height > 0 && abs(Double($0.width) / Double($0.height) - 2.0 / 3.0) > 0.05 }
         if !wrongRatio.isEmpty {
             out.append(Suggestion(title: "Resize \(wrongRatio.count) image\(wrongRatio.count == 1 ? "" : "s") for Pinterest",

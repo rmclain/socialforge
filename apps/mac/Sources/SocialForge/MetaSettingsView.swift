@@ -1,67 +1,103 @@
 import SwiftUI
 import SocialForgeKit
 
-/// Settings › Publishing: your Meta app (Facebook Pages and Instagram), your Threads app, and public media storage.
+/// Settings › Publishing: your Meta app (Facebook Pages & Instagram), direct Instagram Login,
+/// your Threads app, and public media storage.
 struct MetaPublishingSettings: View {
     @Environment(AppModel.self) private var model
     @State private var appID = ""
     @State private var appSecret = ""
+    @State private var hasMetaSecret = false
+    @State private var igAppID = ""
+    @State private var igAppSecret = ""
+    @State private var hasIGSecret = false
     @State private var threadsID = ""
     @State private var threadsSecret = ""
+    @State private var hasThreadsSecret = false
     @State private var pasted = ""
     @State private var accessKey = ""
     @State private var secretKey = ""
+    @State private var hasStorageAccess = false
+    @State private var hasStorageSecret = false
+    @State private var storageConfigured = false
+
     @AppStorage(MetaSettings.configKey) private var configID = ""
     @AppStorage(MetaSettings.redirectKey) private var redirect = Meta.desktopRedirect
+    @AppStorage(MetaSettings.instagramRedirectKey) private var igRedirect = MetaSettings.defaultThreadsRedirect
     @AppStorage(MetaSettings.threadsRedirectKey) private var threadsRedirect = MetaSettings.defaultThreadsRedirect
     @AppStorage(PublicMediaSettings.endpointKey) private var endpoint = ""
     @AppStorage(PublicMediaSettings.bucketKey) private var bucket = ""
     @AppStorage(PublicMediaSettings.regionKey) private var region = "auto"
     @AppStorage(PublicMediaSettings.publicKey) private var publicBase = ""
+    @AppStorage(PublicMediaSettings.styleKey) private var addressingStyle = S3AddressingStyle.auto.rawValue
 
     static let guide = URL(string: "https://github.com/rmclain/socialforge/blob/main/docs/META_SETUP.md")!
 
     var body: some View {
-        SettingsGroup(title: "Your Meta app (Facebook and Instagram)",
-                      footer: "Create the app at developers.facebook.com and add your own Facebook account as its admin; in Development mode it posts to the Pages and Instagram professional accounts you manage. Add this redirect URI to Facebook Login's Valid OAuth Redirect URIs. Built from Meta's docs; not yet verified with a live post.") {
+        SettingsGroup(title: "Your Meta app (Facebook Pages & linked Instagram)",
+                      footer: "Publishes to Facebook Pages you manage (personal Facebook profiles are not supported by Meta's API) and linked Instagram professional accounts. Built from Meta's docs; not yet verified live.") {
             TextField("App ID", text: $appID).fieldStyle()
-            SecureField(Keychain.read(MetaSettings.secretItem)?.isEmpty == false ? "App secret saved · paste to replace" : "App secret", text: $appSecret).fieldStyle()
+            SecureField(hasMetaSecret ? "App secret saved · paste to replace" : "App secret", text: $appSecret).fieldStyle()
             TextField("Login configuration ID (Facebook Login for Business, optional)", text: $configID).fieldStyle()
             TextField("Redirect URI", text: $redirect).fieldStyle().font(DS.mono)
             HStack {
                 Button("Save to Keychain") { saveMeta() }.buttonStyle(SecondaryButtonStyle())
+                if hasMetaSecret {
+                    Button("Clear Secret") { clearMetaSecret() }.buttonStyle(SecondaryButtonStyle())
+                }
                 Button("Connect Facebook & Instagram") {
                     saveMeta()
                     Task { await model.connectMeta(.facebook) }
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(appID.isEmpty || (appSecret.isEmpty && Keychain.read(MetaSettings.secretItem)?.isEmpty != false))
+                .disabled(appID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (appSecret.isEmpty && !hasMetaSecret))
                 Spacer()
                 Link("Setup guide", destination: Self.guide).font(DS.small)
             }
         }
-        SettingsGroup(title: "Your Threads app",
-                      footer: "Threads apps have their own ID and secret (the Threads use case in your Meta app). Threads accepts only https redirect URIs: register this one under Redirect Callback URLs. Its page never sees your secret; you paste the address back here.") {
+        SettingsGroup(title: "Direct Instagram Business Login (optional)",
+                      footer: "Connect an Instagram Business or Creator account directly via Instagram Login without needing a linked Facebook Page.") {
+            TextField("Instagram App ID", text: $igAppID).fieldStyle()
+            SecureField(hasIGSecret ? "Instagram App secret saved · paste to replace" : "Instagram App secret", text: $igAppSecret).fieldStyle()
+            TextField("Redirect URI", text: $igRedirect).fieldStyle().font(DS.mono)
+            HStack {
+                Button("Save to Keychain") { saveInstagram() }.buttonStyle(SecondaryButtonStyle())
+                if hasIGSecret {
+                    Button("Clear Secret") { clearIGSecret() }.buttonStyle(SecondaryButtonStyle())
+                }
+                Button("Connect Instagram Directly") {
+                    saveInstagram()
+                    Task { await model.connectMeta(.instagramLogin) }
+                }
+                .buttonStyle(PrimaryButtonStyle())
+                .disabled(igAppID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (igAppSecret.isEmpty && !hasIGSecret))
+            }
+        }
+        SettingsGroup(title: "Your Threads app (standalone provider)",
+                      footer: "Threads uses its own App ID, secret, and HTTPS redirect callback URL. Paste the full callback URL (including state) back into SocialForge to complete sign-in.") {
             TextField("Threads app ID", text: $threadsID).fieldStyle()
-            SecureField(Keychain.read(MetaSettings.threadsSecretItem)?.isEmpty == false ? "Threads app secret saved · paste to replace" : "Threads app secret", text: $threadsSecret).fieldStyle()
+            SecureField(hasThreadsSecret ? "Threads app secret saved · paste to replace" : "Threads app secret", text: $threadsSecret).fieldStyle()
             TextField("Redirect URI", text: $threadsRedirect).fieldStyle().font(DS.mono)
             HStack {
                 Button("Save to Keychain") { saveThreads() }.buttonStyle(SecondaryButtonStyle())
+                if hasThreadsSecret {
+                    Button("Clear Secret") { clearThreadsSecret() }.buttonStyle(SecondaryButtonStyle())
+                }
                 Button("Connect Threads") {
                     saveThreads()
                     Task { await model.connectMeta(.threads) }
                 }
                 .buttonStyle(PrimaryButtonStyle())
-                .disabled(threadsID.isEmpty || (threadsSecret.isEmpty && Keychain.read(MetaSettings.threadsSecretItem)?.isEmpty != false))
+                .disabled(threadsID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || (threadsSecret.isEmpty && !hasThreadsSecret))
             }
         }
         if let pending = model.pendingOAuth {
             SettingsGroup(title: "Finish connecting \(pending.serviceName)",
-                          footer: "After you allow access, the browser lands on \(URL(string: pending.redirectURI)?.host() ?? "the redirect page"). Copy the whole address from the address bar and paste it here. The code in it works once, for a few minutes.") {
-                TextField("Paste the address from your browser", text: $pasted).fieldStyle().font(DS.mono)
+                          footer: "Copy the full redirect URL from your browser (including code and state) and paste it here. SocialForge validates state and redirect URI before exchanging the code.") {
+                TextField("Paste the complete callback URL from your browser", text: $pasted).fieldStyle().font(DS.mono)
                     .onSubmit { finish() }
                 HStack {
-                    Button("Finish") { finish() }.buttonStyle(PrimaryButtonStyle()).disabled(pasted.isEmpty)
+                    Button("Finish") { finish() }.buttonStyle(PrimaryButtonStyle()).disabled(pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     Button("Cancel") { model.pendingOAuth = nil; pasted = "" }.buttonStyle(SecondaryButtonStyle())
                 }
             }
@@ -69,46 +105,127 @@ struct MetaPublishingSettings: View {
         if let message = model.metaMessage {
             Text(message).font(DS.small).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
         }
-        SettingsGroup(title: "Public media storage (optional)",
-                      footer: "Instagram photos and Threads photos and videos are fetched by Meta from a public address, so they need an S3-compatible bucket such as Cloudflare R2. Files go in a random folder and are deleted after the post goes out. Reels and Facebook posts upload from this Mac and don't need it. Keys stay in your Keychain.") {
+        SettingsGroup(title: "Public media storage (S3 / Cloudflare R2)",
+                      footer: "Required for Instagram photos/carousels and Threads photo/video posts. Files are stored under unpredictable keys and deleted automatically after publishing.") {
             TextField("S3 endpoint (https://<account>.r2.cloudflarestorage.com)", text: $endpoint).fieldStyle()
             HStack(spacing: Space.sm) {
                 TextField("Bucket", text: $bucket).fieldStyle()
                 TextField("Region", text: $region).fieldStyle().frame(width: 96)
+                Picker("Style", selection: $addressingStyle) {
+                    Text("Auto").tag(S3AddressingStyle.auto.rawValue)
+                    Text("Path").tag(S3AddressingStyle.pathStyle.rawValue)
+                    Text("Virtual").tag(S3AddressingStyle.virtualHosted.rawValue)
+                }
+                .labelsHidden()
+                .frame(width: 92)
             }
             TextField("Public URL (https://pub-….r2.dev or your domain)", text: $publicBase).fieldStyle()
-            TextField(Keychain.read(PublicMediaSettings.accessKeyItem)?.isEmpty == false ? "Access key ID saved · paste to replace" : "Access key ID", text: $accessKey).fieldStyle()
-            SecureField(Keychain.read(PublicMediaSettings.secretItem)?.isEmpty == false ? "Secret access key saved · paste to replace" : "Secret access key", text: $secretKey).fieldStyle()
+            TextField(hasStorageAccess ? "Access key ID saved · paste to replace" : "Access key ID", text: $accessKey).fieldStyle()
+            SecureField(hasStorageSecret ? "Secret access key saved · paste to replace" : "Secret access key", text: $secretKey).fieldStyle()
             HStack {
                 Button("Save Keys") { saveStorage() }.buttonStyle(SecondaryButtonStyle())
-                Button("Test Upload") {
+                if hasStorageAccess || hasStorageSecret {
+                    Button("Clear Keys") { clearStorageKeys() }.buttonStyle(SecondaryButtonStyle())
+                }
+                Button("Verify Storage") {
                     saveStorage()
                     Task { await model.testPublicMedia() }
                 }
                 .buttonStyle(SecondaryButtonStyle())
                 Spacer()
-                StatusDot(text: PublicMediaSettings.config == nil ? "Not set up" : "Set up", color: PublicMediaSettings.config == nil ? DS.text3 : DS.green)
+                StatusDot(
+                    text: model.publicMediaVerification?.passed == true ? "Verified" : (storageConfigured ? "Configured · untested" : "Not configured"),
+                    color: model.publicMediaVerification?.passed == true ? DS.green : (storageConfigured ? DS.amber : DS.text3)
+                )
             }
         }
-        .onAppear {
-            appID = Keychain.read(MetaSettings.appIDItem) ?? ""
-            threadsID = Keychain.read(MetaSettings.threadsIDItem) ?? ""
-        }
+        .onAppear { reloadState() }
+        .onChange(of: endpoint) { _, _ in refreshStorageFlag() }
+        .onChange(of: bucket) { _, _ in refreshStorageFlag() }
+        .onChange(of: region) { _, _ in refreshStorageFlag() }
+        .onChange(of: publicBase) { _, _ in refreshStorageFlag() }
     }
 
+    private func reloadState() {
+        appID = Keychain.read(MetaSettings.appIDItem) ?? ""
+        hasMetaSecret = Keychain.read(MetaSettings.secretItem)?.isEmpty == false
+        igAppID = Keychain.read(MetaSettings.instagramIDItem) ?? ""
+        hasIGSecret = Keychain.read(MetaSettings.instagramSecretItem)?.isEmpty == false
+        threadsID = Keychain.read(MetaSettings.threadsIDItem) ?? ""
+        hasThreadsSecret = Keychain.read(MetaSettings.threadsSecretItem)?.isEmpty == false
+        hasStorageAccess = Keychain.read(PublicMediaSettings.accessKeyItem)?.isEmpty == false
+        hasStorageSecret = Keychain.read(PublicMediaSettings.secretItem)?.isEmpty == false
+        refreshStorageFlag()
+    }
+
+    private func refreshStorageFlag() {
+        storageConfigured = PublicMediaSettings.config() != nil
+    }
+
+    private func clean(_ s: String) -> String { s.trimmingCharacters(in: .whitespacesAndNewlines) }
+
     private func saveMeta() {
-        Keychain.write(MetaSettings.appIDItem, appID.trimmingCharacters(in: .whitespaces))
-        if !appSecret.isEmpty { Keychain.write(MetaSettings.secretItem, appSecret.trimmingCharacters(in: .whitespaces)); appSecret = "" }
+        Keychain.write(MetaSettings.appIDItem, clean(appID))
+        if !clean(appSecret).isEmpty { Keychain.write(MetaSettings.secretItem, clean(appSecret)); appSecret = "" }
+        reloadState()
+        model.modeRevision += 1
+    }
+
+    private func clearMetaSecret() {
+        Keychain.write(MetaSettings.secretItem, "")
+        appSecret = ""
+        reloadState()
+        model.modeRevision += 1
+    }
+
+    private func saveInstagram() {
+        Keychain.write(MetaSettings.instagramIDItem, clean(igAppID))
+        if !clean(igAppSecret).isEmpty { Keychain.write(MetaSettings.instagramSecretItem, clean(igAppSecret)); igAppSecret = "" }
+        reloadState()
+        model.modeRevision += 1
+    }
+
+    private func clearIGSecret() {
+        Keychain.write(MetaSettings.instagramSecretItem, "")
+        igAppSecret = ""
+        reloadState()
+        model.modeRevision += 1
     }
 
     private func saveThreads() {
-        Keychain.write(MetaSettings.threadsIDItem, threadsID.trimmingCharacters(in: .whitespaces))
-        if !threadsSecret.isEmpty { Keychain.write(MetaSettings.threadsSecretItem, threadsSecret.trimmingCharacters(in: .whitespaces)); threadsSecret = "" }
+        Keychain.write(MetaSettings.threadsIDItem, clean(threadsID))
+        if !clean(threadsSecret).isEmpty { Keychain.write(MetaSettings.threadsSecretItem, clean(threadsSecret)); threadsSecret = "" }
+        reloadState()
+        model.modeRevision += 1
+    }
+
+    private func clearThreadsSecret() {
+        Keychain.write(MetaSettings.threadsSecretItem, "")
+        threadsSecret = ""
+        reloadState()
+        model.modeRevision += 1
     }
 
     private func saveStorage() {
-        if !accessKey.isEmpty { Keychain.write(PublicMediaSettings.accessKeyItem, accessKey.trimmingCharacters(in: .whitespaces)); accessKey = "" }
-        if !secretKey.isEmpty { Keychain.write(PublicMediaSettings.secretItem, secretKey.trimmingCharacters(in: .whitespaces)); secretKey = "" }
+        endpoint = clean(endpoint)
+        bucket = clean(bucket)
+        region = clean(region)
+        publicBase = clean(publicBase)
+        if !clean(accessKey).isEmpty { Keychain.write(PublicMediaSettings.accessKeyItem, clean(accessKey)); accessKey = "" }
+        if !clean(secretKey).isEmpty { Keychain.write(PublicMediaSettings.secretItem, clean(secretKey)); secretKey = "" }
+        model.publicMediaVerification = nil
+        reloadState()
+        model.modeRevision += 1
+    }
+
+    private func clearStorageKeys() {
+        Keychain.write(PublicMediaSettings.accessKeyItem, "")
+        Keychain.write(PublicMediaSettings.secretItem, "")
+        accessKey = ""
+        secretKey = ""
+        model.publicMediaVerification = nil
+        reloadState()
+        model.modeRevision += 1
     }
 
     private func finish() {

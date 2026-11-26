@@ -80,8 +80,14 @@ public struct AIProviderConfig: Codable, Sendable, Equatable {
 public struct AIUsage: Sendable, Equatable {
     public var inputTokens: Int?
     public var outputTokens: Int?
-    public init(inputTokens: Int? = nil, outputTokens: Int? = nil) {
-        self.inputTokens = inputTokens; self.outputTokens = outputTokens
+    public var reasoningTokens: Int?
+    public var cachedTokens: Int?
+
+    public init(inputTokens: Int? = nil, outputTokens: Int? = nil, reasoningTokens: Int? = nil, cachedTokens: Int? = nil) {
+        self.inputTokens = inputTokens
+        self.outputTokens = outputTokens
+        self.reasoningTokens = reasoningTokens
+        self.cachedTokens = cachedTokens
     }
 }
 
@@ -97,6 +103,7 @@ public enum AIError: Error, LocalizedError, Equatable {
     case unreachable(String)
     case badResponse(String)
     case refused(String)
+    case cancelled
 
     public var errorDescription: String? {
         switch self {
@@ -105,6 +112,7 @@ public enum AIError: Error, LocalizedError, Equatable {
         case .unreachable(let why): "Could not reach the AI service: \(why)"
         case .badResponse(let why): "The AI service sent an answer SocialForge could not use: \(why)"
         case .refused(let why): "The AI service declined this request: \(why)"
+        case .cancelled: "The AI request was cancelled."
         }
     }
 }
@@ -139,6 +147,67 @@ public func makeImageProvider(_ config: AIProviderConfig, apiKey: String?, sessi
     }
 }
 
+/// Discovers available models from the configured provider (OpenAI, Anthropic, Gemini, Ollama, LM Studio, or compatible endpoint).
+public func discoverAIModels(_ config: AIProviderConfig, apiKey: String?, session: URLSession = .shared) async throws(AIError) -> [String] {
+    let http = AIHTTP(config: config, apiKey: apiKey, session: session)
+    let key = try http.requireKey()
+    switch config.id {
+    case .openai, .openaiCompatible:
+        var headers: [String: String] = [:]
+        if let key { headers["Authorization"] = "Bearer \(key)" }
+        do {
+            let obj = try await http.getJSON(try http.url("models"), headers: headers, timeout: 15)
+            if let data = obj["data"] as? [[String: Any]] {
+                let ids = data.compactMap { $0["id"] as? String }.filter { !$0.isEmpty }.sorted()
+                if !ids.isEmpty { return ids }
+            }
+        } catch {
+            // Ollama also exposes /api/tags even if /v1/models is unavailable.
+            if config.id == .openaiCompatible, let tagsURL = try? http.rawURL("api/tags") {
+                let obj = try await http.getJSON(tagsURL, headers: headers, timeout: 15)
+                if let models = obj["models"] as? [[String: Any]] {
+                    return models.compactMap { $0["name"] as? String }.filter { !$0.isEmpty }.sorted()
+                }
+            }
+            throw error
+        }
+        return []
+    case .anthropic:
+        var headers = ["anthropic-version": AnthropicMessagesProvider.apiVersion]
+        if let key { headers["x-api-key"] = key }
+        let obj = try await http.getJSON(try http.url("models"), headers: headers, timeout: 15)
+        let data = obj["data"] as? [[String: Any]] ?? []
+        return data.compactMap { $0["id"] as? String }.filter { !$0.isEmpty }.sorted()
+    case .gemini:
+        var headers: [String: String] = [:]
+        if let key { headers["x-goog-api-key"] = key }
+        let obj = try await http.getJSON(try http.url("models", version: "v1beta"), headers: headers, timeout: 15)
+        let models = obj["models"] as? [[String: Any]] ?? []
+        return models.compactMap { item -> String? in
+            guard let name = item["name"] as? String else { return nil }
+            let methods = item["supportedGenerationMethods"] as? [String] ?? []
+            if !methods.isEmpty && !methods.contains("generateContent") { return nil }
+            return name.hasPrefix("models/") ? String(name.dropFirst("models/".count)) : name
+        }.sorted()
+    case .comfyui:
+        return []
+    }
+}
+
+/// Validates that remote AI endpoints use HTTPS (HTTP is permitted only on localhost or private LAN).
+public func aiEndpointTransportProblem(_ rawURL: String) -> String? {
+    let trimmed = rawURL.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard let url = URL(string: trimmed), let scheme = url.scheme?.lowercased(), let host = url.host?.lowercased(), !host.isEmpty else {
+        return "Enter a full URL such as https://api.openai.com or http://127.0.0.1:11434."
+    }
+    if scheme == "https" { return nil }
+    guard scheme == "http" else { return "Use https:// or http://." }
+    let local = host == "localhost" || host == "127.0.0.1" || host == "::1" || host.hasSuffix(".local")
+        || host.hasPrefix("192.168.") || host.hasPrefix("10.")
+        || (host.hasPrefix("172.") && (16...31).contains(Int(host.split(separator: ".").dropFirst().first ?? "") ?? 0))
+    return local ? nil : "Remote AI endpoints must use https:// so API keys and prompts are not sent in the clear."
+}
+
 // MARK: - HTTP plumbing
 
 struct AIHTTP: Sendable {
@@ -152,24 +221,53 @@ struct AIHTTP: Sendable {
     }
 
     func requireKey() throws(AIError) -> String? {
-        if config.id.needsKey, key == nil { throw .notConfigured("Add a \(config.id.displayName) key in Settings.") }
+        if config.id.needsKey, key == nil { throw .notConfigured("Add a \(config.id.displayName) key in Connections or Settings.") }
         return key
     }
 
-    /// `{base}/v1/{path}`, without doubling a `/v1` the person already typed.
-    func url(_ path: String, version: String = "v1") throws(AIError) -> URL {
+    private func validatedComponents() throws(AIError) -> URLComponents {
         let trimmed = config.baseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard var comps = URLComponents(string: trimmed), let scheme = comps.scheme?.lowercased(),
-              scheme == "http" || scheme == "https", comps.host?.isEmpty == false else {
+        if let problem = aiEndpointTransportProblem(trimmed) {
+            throw .notConfigured(problem)
+        }
+        guard let comps = URLComponents(string: trimmed), comps.host?.isEmpty == false else {
             throw .notConfigured("Enter a full address for \(config.id.displayName), like https://api.example.com.")
         }
+        return comps
+    }
+
+    /// `{base}/{version}/{path}`, without doubling a version segment the person already typed.
+    func url(_ path: String, version: String = "v1") throws(AIError) -> URL {
+        var comps = try validatedComponents()
         var base = comps.path
         while base.hasSuffix("/") { base.removeLast() }
-        if !base.hasSuffix("/" + version) { base += "/" + version }
+        let hasVersionSuffix = base.hasSuffix("/" + version)
+            || base.range(of: #"/v\d+(beta)?$"#, options: .regularExpression) != nil
+        if !hasVersionSuffix { base += "/" + version }
         comps.path = base + "/" + path
         comps.query = nil
         guard let url = comps.url else { throw .notConfigured("The address for \(config.id.displayName) is not valid.") }
         return url
+    }
+
+    /// `{base}/{path}` without inserting `/v1` (e.g. Ollama `/api/tags`).
+    func rawURL(_ path: String) throws(AIError) -> URL {
+        var comps = try validatedComponents()
+        var base = comps.path
+        while base.hasSuffix("/") { base.removeLast() }
+        comps.path = base + "/" + path
+        comps.query = nil
+        guard let url = comps.url else { throw .notConfigured("The address for \(config.id.displayName) is not valid.") }
+        return url
+    }
+
+    func getJSON(_ url: URL, headers: [String: String], timeout: TimeInterval = 30) async throws(AIError) -> [String: Any] {
+        var req = URLRequest(url: url)
+        req.httpMethod = "GET"
+        req.timeoutInterval = timeout
+        req.setValue("application/json", forHTTPHeaderField: "Accept")
+        for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
+        return try await sendJSON(req)
     }
 
     func postJSON(_ url: URL, body: [String: Any], headers: [String: String], timeout: TimeInterval = 120) async throws(AIError) -> [String: Any] {
@@ -180,29 +278,50 @@ struct AIHTTP: Sendable {
         req.setValue("application/json", forHTTPHeaderField: "Accept")
         for (k, v) in headers { req.setValue(v, forHTTPHeaderField: k) }
         do { req.httpBody = try JSONSerialization.data(withJSONObject: body) } catch { throw .badResponse("could not encode the request") }
+        return try await sendJSON(req)
+    }
 
-        let data: Data, response: URLResponse
-        do { (data, response) = try await session.data(for: req) } catch {
-            if error is CancellationError || (error as? URLError)?.code == .cancelled { throw .unreachable("cancelled") }
-            throw .unreachable(redact(error.localizedDescription))
-        }
-        guard let http = response as? HTTPURLResponse else { throw .unreachable("no HTTP response") }
-        guard (200..<300).contains(http.statusCode) else {
-            if http.statusCode == 401 || http.statusCode == 403 {
-                throw .http(http.statusCode, "The key was rejected. Check the \(config.id.displayName) key in Settings.")
+    private func sendJSON(_ req: URLRequest) async throws(AIError) -> [String: Any] {
+        let maxAttempts = 3
+        for attempt in 1...maxAttempts {
+            let data: Data, response: URLResponse
+            do { (data, response) = try await session.data(for: req) } catch {
+                if error is CancellationError || (error as? URLError)?.code == .cancelled { throw .cancelled }
+                throw .unreachable(redact(error.localizedDescription))
+            }
+            guard let http = response as? HTTPURLResponse else { throw .unreachable("no HTTP response") }
+            if (200..<300).contains(http.statusCode) {
+                guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                    throw .badResponse("the answer was not JSON")
+                }
+                return obj
+            }
+            if http.statusCode == 401 {
+                throw .http(401, "The key was rejected. Check the \(config.id.displayName) key in Connections or Settings.")
+            }
+            if http.statusCode == 403 {
+                let detail = Self.errorMessage(data).map { redact($0) }
+                let msg = detail.map { "Permission or billing denied: \($0)" }
+                    ?? "Access forbidden for \(config.id.displayName). Check API permissions, billing, or region."
+                throw .http(403, msg)
+            }
+            let retryable = [429, 502, 503, 504].contains(http.statusCode)
+            if retryable && attempt < maxAttempts {
+                let retryHeader = http.value(forHTTPHeaderField: "Retry-After").flatMap(Double.init)
+                let delay = min(max(retryHeader ?? Double(attempt) * 1.5, 0.25), 10.0)
+                do { try await Task.sleep(for: .seconds(delay)) } catch { throw .cancelled }
+                continue
             }
             throw .http(http.statusCode, redact(Self.errorMessage(data) ?? HTTPURLResponse.localizedString(forStatusCode: http.statusCode)))
         }
-        guard let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
-            throw .badResponse("the answer was not JSON")
-        }
-        return obj
+        throw .unreachable("request failed after retries")
     }
 
-    /// Never echo the key back, even if a provider includes it in an error.
+    /// Never echo the key or bearer tokens back, even if a provider includes them in an error.
     func redact(_ s: String) -> String {
         var out = s
         if let key, key.count >= 4 { out = out.replacingOccurrences(of: key, with: "[key]") }
+        out = DiagnosticRedactor.sanitize(out, secrets: key.map { [$0] } ?? [])
         return String(out.prefix(400))
     }
 
@@ -247,12 +366,19 @@ struct OpenAIChatProvider: TextProvider {
         guard let choice = (obj["choices"] as? [[String: Any]])?.first, let message = choice["message"] as? [String: Any] else {
             throw .badResponse("no choices in the answer")
         }
-        if let refusal = message["refusal"] as? String, !refusal.isEmpty { throw .refused(refusal) }
+        if let refusal = message["refusal"] as? String, !refusal.isEmpty { throw .refused(http.redact(refusal)) }
         if choice["finish_reason"] as? String == "content_filter" { throw .refused("The content filter stopped the answer.") }
         let text = message["content"] as? String ?? ""
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw .badResponse("the answer was empty") }
         let usage = obj["usage"] as? [String: Any]
-        return AITextResult(text: text, usage: AIUsage(inputTokens: intValue(usage?["prompt_tokens"]), outputTokens: intValue(usage?["completion_tokens"])))
+        let compDetails = usage?["completion_tokens_details"] as? [String: Any]
+        let promptDetails = usage?["prompt_tokens_details"] as? [String: Any]
+        return AITextResult(text: text, usage: AIUsage(
+            inputTokens: intValue(usage?["prompt_tokens"]),
+            outputTokens: intValue(usage?["completion_tokens"]),
+            reasoningTokens: intValue(compDetails?["reasoning_tokens"]),
+            cachedTokens: intValue(promptDetails?["cached_tokens"])
+        ))
     }
 }
 
@@ -280,7 +406,7 @@ struct AnthropicMessagesProvider: TextProvider {
         let stop = obj["stop_reason"] as? String
         if stop == "refusal" {
             let details = obj["stop_details"] as? [String: Any]
-            throw .refused((details?["explanation"] as? String) ?? "The model declined to answer.")
+            throw .refused(http.redact((details?["explanation"] as? String) ?? "The model declined to answer."))
         }
         // Thinking blocks are skipped; only text blocks are the answer.
         let blocks = obj["content"] as? [[String: Any]] ?? []
@@ -289,7 +415,11 @@ struct AnthropicMessagesProvider: TextProvider {
             throw .badResponse(stop == "max_tokens" ? "the answer was cut off before any text" : "the answer was empty")
         }
         let usage = obj["usage"] as? [String: Any]
-        return AITextResult(text: text, usage: AIUsage(inputTokens: intValue(usage?["input_tokens"]), outputTokens: intValue(usage?["output_tokens"])))
+        return AITextResult(text: text, usage: AIUsage(
+            inputTokens: intValue(usage?["input_tokens"]),
+            outputTokens: intValue(usage?["output_tokens"]),
+            cachedTokens: intValue(usage?["cache_read_input_tokens"])
+        ))
     }
 }
 
@@ -325,7 +455,12 @@ struct GeminiProvider: TextProvider {
         let text = parts.filter { $0["thought"] as? Bool != true }.compactMap { $0["text"] as? String }.joined()
         guard !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw .badResponse("the answer was empty") }
         let usage = obj["usageMetadata"] as? [String: Any]
-        return AITextResult(text: text, usage: AIUsage(inputTokens: intValue(usage?["promptTokenCount"]), outputTokens: intValue(usage?["candidatesTokenCount"])))
+        return AITextResult(text: text, usage: AIUsage(
+            inputTokens: intValue(usage?["promptTokenCount"]),
+            outputTokens: intValue(usage?["candidatesTokenCount"]),
+            reasoningTokens: intValue(usage?["thoughtsTokenCount"]),
+            cachedTokens: intValue(usage?["cachedContentTokenCount"])
+        ))
     }
 }
 
@@ -335,9 +470,16 @@ struct GeminiProvider: TextProvider {
 struct OpenAIImageProvider: ImageProvider {
     let http: AIHTTP
 
-    /// gpt-image-1 accepts only a few sizes; pick the one closest to the wanted shape.
-    static func openAISize(width: Int, height: Int) -> String {
+    /// Picks the closest accepted aspect size for OpenAI image models (gpt-image-1 vs dall-e-3 / dall-e-2).
+    static func openAISize(width: Int, height: Int, model: String = "gpt-image-1") -> String {
+        let lower = model.lowercased()
         let w = Double(max(width, 1)), h = Double(max(height, 1))
+        if lower.hasPrefix("dall-e-2") { return "1024x1024" }
+        if lower.hasPrefix("dall-e-3") {
+            if w / h >= 1.2 { return "1792x1024" }
+            if h / w >= 1.2 { return "1024x1792" }
+            return "1024x1024"
+        }
         if w / h >= 1.2 { return "1536x1024" }
         if h / w >= 1.2 { return "1024x1536" }
         return "1024x1024"
@@ -347,9 +489,14 @@ struct OpenAIImageProvider: ImageProvider {
         let key = try http.requireKey()
         let model = http.config.imageModel.trimmingCharacters(in: .whitespaces)
         guard !model.isEmpty else { throw .notConfigured("Choose an image model for \(http.config.id.displayName).") }
-        var body: [String: Any] = ["model": model, "prompt": prompt, "n": max(1, min(count, 10))]
+        let lower = model.lowercased()
+        let effectiveCount = lower.hasPrefix("dall-e-3") ? 1 : max(1, min(count, 10))
+        var body: [String: Any] = ["model": model, "prompt": prompt, "n": effectiveCount]
         if http.config.id == .openai {
-            body["size"] = Self.openAISize(width: width, height: height)
+            body["size"] = Self.openAISize(width: width, height: height, model: model)
+            if lower.hasPrefix("dall-e-") {
+                body["response_format"] = "b64_json"
+            }
         } else {
             body["size"] = "\(width)x\(height)"
             body["response_format"] = "b64_json"

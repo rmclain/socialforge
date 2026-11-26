@@ -16,10 +16,16 @@ describe('units', () => {
     assert.throws(() => decrypt(bad.toString('base64'), key))
   })
 
-  it('signs and verifies session tokens', () => {
-    const t = signSession({ ws: 'abc', iat: 1 }, 'k'.repeat(32))
-    assert.deepEqual(verifySession(t, 'k'.repeat(32)), { ws: 'abc', iat: 1 })
-    assert.equal(verifySession(t, 'x'.repeat(32)), null)
+  it('signs and verifies session tokens and rejects expired or malformed ones', () => {
+    const ws = '11111111-2222-4333-8444-555555555555'
+    const t = signSession({ ws, iat: 1, exp: 9999999999 }, 'k'.repeat(32))
+    assert.deepEqual(verifySession(t, 'k'.repeat(32), 100), { ws, iat: 1, exp: 9999999999 })
+    assert.equal(verifySession(t, 'x'.repeat(32), 100), null)
+    assert.equal(verifySession(`${t}.extra`, 'k'.repeat(32), 100), null)
+    const expired = signSession({ ws, iat: 1, exp: 50 }, 'k'.repeat(32))
+    assert.equal(verifySession(expired, 'k'.repeat(32), 100), null)
+    const badWs = signSession({ ws: 'not-a-uuid', iat: 1 }, 'k'.repeat(32))
+    assert.equal(verifySession(badWs, 'k'.repeat(32), 100), null)
     assert.equal(verifySession('garbage', 'k'.repeat(32)), null)
   })
 
@@ -38,7 +44,8 @@ describe('units', () => {
     assert.match(validatePublication(specs.get('pinterest'), { ...pin, title: 'x'.repeat(101) }, ['boards:read', 'pins:write'], img).join(), /title/)
     assert.match(validatePublication(specs.get('pinterest'), pin, ['boards:read'], img).join(), /pins:write/)
     assert.match(validatePublication(specs.get('pinterest'), pin, ['boards:read', 'pins:write'], { bytes: 30e6, contentType: 'image/jpeg' }).join(), /MB/)
-    assert.match(validatePublication(specs.get('x'), pin, [], img).join(), /not available/)
+    assert.match(validatePublication(specs.get('x'), pin, [], img).join(), /tweet\.write/)
+    assert.match(validatePublication(specs.get('linkedin'), pin, ['w_member_social'], { bytes: 10e6, contentType: 'image/jpeg' }).join(), /MB/)
   })
 
   it('refuses to start without required secrets', () => {
@@ -123,8 +130,27 @@ describe('HTTP API', () => {
     assert.equal((await t.app.inject({ method: 'POST', url: `/v1/publications/${id}/cancel`, headers: auth(), payload: {} })).statusCode, 409)
   })
 
+  it('GET /v1/capabilities reports supported platforms and security headers', async () => {
+    const res = await t.app.inject({ method: 'GET', url: '/v1/capabilities' })
+    assert.equal(res.statusCode, 200)
+    assert.equal(res.headers['x-content-type-options'], 'nosniff')
+    assert.equal(res.headers['referrer-policy'], 'no-referrer')
+    assert.deepEqual(res.json().platforms, ['pinterest'])
+  })
+
+  it('returns 404 (not 500) on non-UUID publication ids', async () => {
+    assert.equal((await t.app.inject({ method: 'GET', url: '/v1/publications/not-a-uuid/attempts', headers: auth() })).statusCode, 404)
+    assert.equal((await t.app.inject({ method: 'POST', url: '/v1/publications/not-a-uuid/cancel', headers: auth(), payload: {} })).statusCode, 404)
+  })
+
   it('keeps workspaces apart', async () => {
     const other = signSession({ ws: '00000000-0000-4000-8000-000000000000', iat: 0 }, t.svc.config.sessionSigningKey)
     assert.equal((await t.app.inject({ method: 'GET', url: '/v1/publications', headers: { authorization: `Bearer ${other}` } })).statusCode, 401)
+    // Two real workspaces cannot see each other's publications or accounts.
+    const { rows } = await t.svc.pool.query("insert into workspaces (name) values ('Brand B') returning id")
+    const wsBToken = signSession({ ws: rows[0].id, iat: Math.floor(Date.now() / 1000) }, t.svc.config.sessionSigningKey)
+    const pubsB = await t.app.inject({ method: 'GET', url: '/v1/publications', headers: { authorization: `Bearer ${wsBToken}` } })
+    assert.equal(pubsB.statusCode, 200)
+    assert.deepEqual(pubsB.json().publications, [])
   })
 })

@@ -97,13 +97,13 @@ Adding a platform: implement `PublishTarget` (`publish`, `findExisting`,
 
 | Data | Where it lives | Leaves the Mac? |
 |---|---|---|
-| Original media and variants | Library folder on the Mac | Only the image of each post, sent to the platform when it publishes |
-| Post copy, links, times | SwiftData store on the Mac | Sent to the platform at publish time |
-| Pinterest app ID and secret | Login Keychain | Only to Pinterest's token endpoint |
-| Pinterest access and refresh tokens | Login Keychain | Only to Pinterest's API |
-| OAuth redirect | A one-shot listener on 127.0.0.1:8085 | Never exposed beyond this Mac |
-| ComfyUI address | Preferences | The test call goes only to that address; remote servers must use HTTPS |
-| AI provider keys | Not used yet (milestone 5); planned for the Keychain | — |
+| Original media and variants | Library folder on the Mac | Only the media of each post, sent to the target platform (or user's S3/R2 bucket for IG/Threads media) when publishing |
+| Post copy, links, times | SwiftData store on the Mac (`0700` directory permissions) | Sent to the platform at publish time |
+| Social platform app secrets & OAuth tokens | macOS Login Keychain (`Keychain.writeStrict`) | Only to each provider's official OAuth/API endpoints |
+| OAuth loopback redirect | Ephemeral listener on `127.0.0.1:8085` (awaits `.ready`, validates state/path) | Never exposed beyond this Mac |
+| ComfyUI address & token | Preferences / Keychain | Only to that ComfyUI server; remote servers must use HTTPS |
+| AI provider keys (OpenAI, Anthropic, Gemini, local) | macOS Login Keychain | Sent only in request headers to that provider's HTTPS (or local) endpoint; never logged or included in diagnostics |
+| External MCP servers (optional) | User preferences + Keychain bearer token | Only to user-configured servers with tool allow-lists & path confinement; outputs tagged untrusted |
 
 - Imported CSV and media metadata are data, never instructions.
 - The mock account is created only when you choose it, and is labeled "Mock provider · development only".

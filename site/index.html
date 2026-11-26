@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
 <title>SocialForge</title>
 <meta name="description" content="A native Mac studio that turns product photos, clips, and a CSV into on-brand Pins, Reels, and Shorts, with your own ComfyUI for images, video, and music.">
 <link rel="icon" href="assets/icon.png">
@@ -140,9 +141,9 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
 
   <header class="hero">
     <div>
-      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source · version 0.3</span>
+      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source · version 0.5.0</span>
       <h1 class="serif">Pins, Reels, and Shorts,<br>forged in <em>one sitting</em>.</h1>
-      <p class="lede">Drop in product photos, clips, music, and a CSV of links. SocialForge dresses every image and video in your brand template with real, editable type, makes backgrounds, clips, and songs with your own ComfyUI, plans the calendar, and posts from your Mac. You approve everything first.</p>
+      <p class="lede">Drop in product photos, clips, music, and a CSV of links. SocialForge dresses every image and video in your brand template with real, editable type, generates assets with your own ComfyUI or BYOK AI providers, plans the calendar, and posts across eight platforms from your Mac. You approve everything first.</p>
       <div class="ctas">
         <a class="btn primary" href="https://github.com/rmclain/socialforge/releases/latest">Download for Mac <span class="spark">✦</span></a>
         <a class="btn ghost" href="https://github.com/rmclain/socialforge">View the code</a>
@@ -174,12 +175,12 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
     <div class="shot"><img src="assets/studio-video-dark.jpg" alt="Creative Studio editing a 12-second TikTok video: layers, a product clip, a music track, a timeline, and which platforms the video fits" loading="lazy"></div>
     <p class="fine">Creative Studio, video edition: a looping product clip, a music track that fades out, a headline that appears at two seconds, and a check against every platform's video rules. Export Video writes an MP4 with real fonts.</p>
     <div class="gallery" style="margin-top:20px">
-      <figure><div class="shot"><img src="assets/ai-video-crop.jpg" alt="AI Studio in Video mode with a prompt, workflow, aspect, and length" loading="lazy"></div><figcaption>AI Studio makes clips with your ComfyUI: pick the aspect and length, then drop the result straight onto a design.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/ai-music-crop.jpg" alt="AI Studio in Music mode with a style line and lyrics" loading="lazy"></div><figcaption>Music mode writes a song from a style line and your lyrics, ready to sit under a video.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/bulk-dark.jpg" alt="Bulk Publisher: images matched to a CSV, a queue of Pins, and the cadence panel" loading="lazy"></div><figcaption>Bulk Publisher: thirty photos and a CSV become a month of scheduled Pins.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/settings-publishing-dark.jpg" alt="Settings, Publishing: every platform with its status and video limits" loading="lazy"></div><figcaption>Every platform, with an honest status and its video rules.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/calendar-dark.jpg" alt="Calendar month view with a Pin on every day" loading="lazy"></div><figcaption>The calendar: drag a post to another day; its time stays put.</figcaption></figure>
-      <figure><div class="shot"><img src="assets/brandKits-dark.jpg" alt="Brand kit with palette, fonts, voice, and templates" loading="lazy"></div><figcaption>Brand kits drive every template. Change a color once; everything follows.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/accounts-dark.jpg" alt="Unified Connections hub with Social Accounts, AI Providers, Media Storage, Automation and Agents, and Publishing Infrastructure" loading="lazy"></div><figcaption>Unified Connections: guided setup wizards, shared credentials across brand workspaces, and sanitized diagnostics.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/composer-dark.jpg" alt="Multi-platform Composer supporting all 8 platforms, carousels, AI Copy, and native previews" loading="lazy"></div><figcaption>Composer: write once for all eight platforms, attach carousels, generate AI copy, and schedule independently.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/bulk-dark.jpg" alt="Bulk Publisher: images matched to a CSV, multi-platform queue, recipes, and cadence panel" loading="lazy"></div><figcaption>Bulk Publisher: thirty photos and a CSV become a month of scheduled posts, with saved recipes and error export.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/calendar-dark.jpg" alt="Calendar month view with a post on every day and attention-focused queue" loading="lazy"></div><figcaption>The calendar and queue: DST-safe rescheduling, attention filters, and manual reconciliation for uncertain timeouts.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/ai-video-crop.jpg" alt="AI Studio in Video mode with a prompt, workflow, aspect, and length" loading="lazy"></div><figcaption>AI Studio makes clips and music with your ComfyUI (with preflight workflow validation), ready for Creative Studio.</figcaption></figure>
+      <figure><div class="shot"><img src="assets/brandKits-dark.jpg" alt="Brand kit with palette, fonts, voice, and templates" loading="lazy"></div><figcaption>Brand kits drive every template and keep workspaces strictly isolated. Change a color once; everything follows.</figcaption></figure>
     </div>
   </section>
 
@@ -192,31 +193,33 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
       <div class="feature"><div class="ico">🎬</div><h3>Video studio</h3><p>Drop clips and music on the canvas, time each layer, and export an MP4 (H.264 and AAC) sized for TikTok, Reels, Shorts, Pinterest, and more.</p></div>
       <div class="feature"><div class="ico">✨</div><h3>AI Studio</h3><p>Images, clips, and songs from your own ComfyUI, plus titles and descriptions from OpenAI, Anthropic, Gemini, or a local model. Type stays real text unless you ask the model for it.</p></div>
       <div class="feature"><div class="ico">🧩</div><h3>Starter workflows</h3><p>Five ComfyUI workflows ship in the app: background image, image with words in it, vertical and square video, and music. <a href="https://github.com/rmclain/socialforge/tree/main/comfyui/workflows">Download them</a> for your own ComfyUI.</p></div>
-      <div class="feature"><div class="ico">📮</div><h3>Publishing</h3><p>Your Mac posts to Pinterest, Facebook Pages, Instagram, and Threads with your own developer apps, with retries and no double posts after a timeout.</p></div>
-      <div class="feature"><div class="ico">✍️</div><h3>Composer</h3><p>Write once and get a version per platform, with its own preview and limits, including video rules.</p></div>
-      <div class="feature"><div class="ico">✂️</div><h3>On-device magic</h3><p>Remove backgrounds, smart-crop around the subject, upscale, and tone to your brand color. Your photos never leave the Mac.</p></div>
-      <div class="feature"><div class="ico">⚡</div><h3>Automations</h3><p>Watch a folder, resize, brand, write, and queue. Every run stops for your approval.</p></div>
+      <div class="feature"><div class="ico">📮</div><h3>Publishing</h3><p>Your Mac posts to Pinterest, Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, and YouTube with your own developer apps, PKCE OAuth, token refresh, retries, and reconciliation.</p></div>
+      <div class="feature"><div class="ico">✍️</div><h3>Composer</h3><p>Write once and get tailored versions for all eight platforms, carousels, native previews, campaign UTMs, and disclosure fields.</p></div>
+      <div class="feature"><div class="ico">🔌</div><h3>Inbound &amp; Outbound MCP</h3><p>Let coding agents queue drafts for review via a hardened 17-tool MCP server, or connect creative MCP tools like ArtCraft with per-tool allow-lists and approval prompts.</p></div>
+      <div class="feature"><div class="ico">⚡</div><h3>Automations</h3><p>Watch a folder, resize, brand, write, and queue. Workspace-isolated, protected against watching managed storage, and always stopping for your approval.</p></div>
     </div>
   </section>
 
   <section id="platforms">
     <h2 class="serif">Where it posts</h2>
-    <p class="sub">Posting goes through developer apps you create on each platform, so your keys stay in your Keychain.</p>
+    <p class="sub">Posting goes through developer apps you create on each platform, so your keys stay in your macOS Keychain. Guided setup wizards live under Connections.</p>
     <div class="honest">
       <div class="col">
-        <h3>Posts from your Mac</h3>
+        <h3>Direct from your Mac</h3>
         <ul>
-          <li><b>Pinterest</b>: image Pins, scheduled in bulk</li>
-          <li><b>Facebook Pages</b>: text, photos, and Reels</li>
-          <li><b>Instagram</b>: Reels upload straight from your Mac; photos need a public storage bucket (Cloudflare R2 or any S3-compatible one)</li>
-          <li><b>Threads</b>: text posts; photos and video use the same storage bucket</li>
+          <li><b>Pinterest</b>: Image &amp; Video Pins, board sections, OAuth refresh</li>
+          <li><b>Facebook Pages</b>: text, photo, multi-photo, link, and Reels</li>
+          <li><b>Instagram</b>: Facebook Login or direct Instagram Business Login; Reels upload directly, photos &amp; carousels use your S3/R2 bucket</li>
+          <li><b>Threads</b>: text, photo, video, and carousels with long-lived token refresh</li>
         </ul>
       </div>
       <div class="col">
-        <h3>Export or drafts</h3>
+        <h3>Official OAuth &amp; PKCE adapters</h3>
         <ul>
-          <li><b>TikTok</b> and <b>YouTube Shorts</b>: SocialForge makes the video at the right size and length; you upload it. Their APIs keep posts private until an app passes their audit.</li>
-          <li><b>X</b> and <b>LinkedIn</b>: saved as drafts for now</li>
+          <li><b>LinkedIn</b>: personal profiles and organization pages with media upload</li>
+          <li><b>X</b>: OAuth 2.0 PKCE, v2 chunked media upload, weighted character counting</li>
+          <li><b>TikTok</b>: Content Posting API v2 with creator info check, Inbox &amp; Direct Post (plus manual fallback for unaudited apps)</li>
+          <li><b>YouTube</b>: Google OAuth PKCE resumable upload for Videos &amp; Shorts with visibility and disclosure fields</li>
         </ul>
       </div>
     </div>
@@ -228,20 +231,20 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
       <div class="col">
         <h3>Works today</h3>
         <ul>
-          <li>The whole bulk Pinterest flow, end to end, with a built-in mock account to try it safely</li>
-          <li>Video designs with clips, music, and timed layers, exported as MP4 and checked by automated tests</li>
-          <li>AI Studio's image, image-with-text, video, and music starter workflows, run end to end on a real ComfyUI server</li>
-          <li>Brand templates, smart resize, analytics from your real data, campaigns with UTM links</li>
-          <li>Automatic updates from these GitHub releases</li>
+          <li>Unified Connections hub, guided setup wizards, Keychain credential profiles, and secret-redacted diagnostics</li>
+          <li>End-to-end bulk publishing, calendar, attention queue, and background agent lock handoff (197 unit tests, 89 E2E self-test checks, 23 optional API tests)</li>
+          <li>Video studio with clips, music, safe-zone guides, and MP4 export; ComfyUI workflow validation &amp; job-scoped cancellation</li>
+          <li>Brand templates, smart resize, multi-brand workspace isolation, campaigns with UTM links, and hardened Inbound/Outbound MCP</li>
+          <li>Automatic updates from GitHub releases with TeamIdentifier and bundle-ID verification</li>
         </ul>
       </div>
       <div class="col">
         <h3>Still on the workbench</h3>
         <ul>
-          <li>Live posting to Pinterest, Facebook, Instagram, and Threads is built to their docs and tested against stand-ins, but hasn't made its first real post yet</li>
-          <li>TikTok and YouTube are export-only, and X and LinkedIn are drafts</li>
-          <li>A Mac can't post while it's asleep: due posts go out when it wakes</li>
-          <li>The cloud AI connections are built to their docs; bring your own key and test it</li>
+          <li>All eight social platform adapters are built against official API docs and verified with stubbed HTTP tests, but remain labeled <b>unverified live</b> until run with real developer credentials</li>
+          <li>A Mac can't post while asleep (due posts follow your missed-post policy on wake); the optional Fastify service in <code>services/api</code> covers asleep-Mac Pinterest publishing</li>
+          <li>Background publisher Login Items registration (<code>SMAppService</code>) requires interactive approval in System Settings</li>
+          <li>Cloud AI, ComfyUI, and S3/R2 connections are tested with stubbed HTTP; bring your own key/bucket and run Verify Connection</li>
         </ul>
       </div>
     </div>
@@ -276,19 +279,30 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
   <button class="btn primary" id="signin-copy" type="button">Copy address</button>
 </div>
 <script>
-// Threads sends people back here after they sign in (SocialForge's redirect). Help them hand the address to the app.
+// Threads sends people back here after they sign in (SocialForge's redirect).
+// Capture the full callback URL into memory and immediately strip sensitive query/fragment
+// parameters from the address bar and history so codes cannot leak via referrers or history.
 (function () {
-  var q = new URLSearchParams(location.search);
-  if (!q.has("code") && !q.has("error")) return;
+  var rawURL = location.href;
+  var search = location.search;
+  var hashParams = new URLSearchParams(location.hash ? location.hash.replace(/^#/, "") : "");
+  var q = new URLSearchParams(search);
+  var hasCode = q.has("code") || hashParams.has("code");
+  var hasError = q.has("error") || hashParams.has("error");
+  if (!hasCode && !hasError) return;
+  try {
+    history.replaceState(null, "", location.pathname);
+  } catch (_) {}
   var box = document.getElementById("signin");
-  if (q.has("error")) {
-    document.getElementById("signin-title").textContent = "Threads sign-in was not completed";
-    document.getElementById("signin-text").textContent = q.get("error_description") || "Try Connect Threads again in SocialForge.";
+  if (hasError) {
+    document.getElementById("signin-title").textContent = "Sign-in was not completed";
+    document.getElementById("signin-text").textContent =
+      q.get("error_description") || hashParams.get("error_description") || "Try connecting again in SocialForge.";
     document.getElementById("signin-copy").style.display = "none";
   }
   document.getElementById("signin-copy").addEventListener("click", function () {
     var b = this;
-    navigator.clipboard.writeText(location.href).then(function () { b.textContent = "Copied. Paste it into SocialForge"; });
+    navigator.clipboard.writeText(rawURL).then(function () { b.textContent = "Copied. Paste it into SocialForge"; });
   });
   box.className += " show";
 })();

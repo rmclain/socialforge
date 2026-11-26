@@ -14,8 +14,9 @@ struct MediaLibraryView: View {
     @State private var lastClicked: UUID?
     @State private var newCollection = ""
     @State private var showCollectionPrompt = false
+    @State private var showHealthSheet = false
 
-    enum Filter: String, CaseIterable { case all = "All", favorites = "Favorites", images = "Images", videos = "Videos", audio = "Audio", variants = "Branded" }
+    enum Filter: String, CaseIterable { case all = "All", favorites = "Favorites", images = "Images", videos = "Videos", audio = "Audio", variants = "Branded", missing = "Missing" }
     enum Sort: String, CaseIterable { case filename = "Filename", newest = "Newest", size = "Size" }
 
     private var mine: [MediaAsset] { allAssets.filter { $0.workspaceID == model.workspaceID } }
@@ -34,6 +35,7 @@ struct MediaLibraryView: View {
                 case .videos: a.kind == "video"
                 case .audio: a.kind == "audio"
                 case .variants: a.tags.contains("branded")
+                case .missing: !a.fileExists
                 }
             }() && (q.isEmpty || a.filename.localizedCaseInsensitiveContains(q) || a.title.localizedCaseInsensitiveContains(q)
                     || a.tags.contains { $0.localizedCaseInsensitiveContains(q) })
@@ -111,6 +113,9 @@ struct MediaLibraryView: View {
             Button("Add") { setCollection(newCollection) }
             Button("Cancel", role: .cancel) {}
         }
+        .sheet(isPresented: $showHealthSheet) {
+            LibraryHealthSheet(assets: mine)
+        }
     }
 
     private var dropZone: some View {
@@ -141,6 +146,7 @@ struct MediaLibraryView: View {
                 .padding(.horizontal, Space.md).frame(height: 36)
                 .background(DS.fillStrong, in: RoundedRectangle(cornerRadius: DS.radiusControl, style: .continuous))
             }
+            Button("Library Health") { showHealthSheet = true }.buttonStyle(SecondaryButtonStyle())
             Button("Import…") { ImportPanel.run(model: model) }.buttonStyle(SecondaryButtonStyle())
         }
         .padding(Space.lg)
@@ -251,17 +257,33 @@ struct MediaLibraryView: View {
     @ViewBuilder
     private func menu(for a: MediaAsset) -> some View {
         let targets = model.mediaSelection.contains(a.uuid) ? model.assets(model.mediaSelection) : [a]
-        Button(a.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
-            let on = !a.isFavorite
-            for t in targets { t.isFavorite = on }
-            try? model.context.save()
+        Button("Create Post in Composer") {
+            model.mediaSelection = Set(targets.map(\.uuid))
+            model.composer.startNew(model: model)
+            model.page = .composer
+        }
+        Button("Send to Bulk Publisher") {
+            model.bulk.assetIDs = targets.map(\.uuid)
+            model.page = .bulk
         }
         Button("Open in Creative Studio") {
             model.studio.openNew(model: model, photoPath: a.storedPath)
             model.page = .studio
         }
-        Button("Use as AI Background Reference") { model.aiStudio.referenceAssetID = a.uuid; model.page = .ai }
+        Button("Generate AI Variations") {
+            model.aiStudio.referenceAssetID = a.uuid
+            model.page = .ai
+        }
+        Divider()
+        Button(a.isFavorite ? "Remove from Favorites" : "Add to Favorites") {
+            let on = !a.isFavorite
+            for t in targets { t.isFavorite = on }
+            try? model.context.save()
+        }
         Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting(targets.map(\.storedURL)) }
+        if !a.sourcePath.isEmpty, FileManager.default.fileExists(atPath: a.sourcePath) {
+            Button("Reveal Original Source") { NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: a.sourcePath)]) }
+        }
         Menu("Collection") {
             ForEach(collections, id: \.self) { c in Button(c) { setCollection(c, for: targets) } }
             Divider()
@@ -295,7 +317,14 @@ struct MediaTile: View {
                     .padding(Space.sm)
                 }
                 .overlay(alignment: .topLeading) {
-                    if asset.isFavorite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow).padding(Space.sm) }
+                    HStack(spacing: 4) {
+                        if asset.isFavorite { Image(systemName: "star.fill").font(.caption).foregroundStyle(.yellow) }
+                        if !asset.fileExists {
+                            Image(systemName: "exclamationmark.triangle.fill").font(.caption).foregroundStyle(DS.amber)
+                                .help("File missing from disk. Open Library Health to relink.")
+                        }
+                    }
+                    .padding(Space.sm)
                 }
                 .overlay(alignment: .bottomTrailing) {
                     if asset.duration > 0 {
@@ -404,6 +433,7 @@ struct AssetDetails: View {
     @Bindable var asset: MediaAsset
     @Environment(AppModel.self) private var model
     @State private var tagText = ""
+    @FocusState private var tagsFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: Space.md) {
@@ -418,6 +448,10 @@ struct AssetDetails: View {
             .frame(height: asset.kind == "audio" ? 64 : 200)
             .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
             .id(asset.uuid)
+            if !asset.fileExists {
+                Label("Media file missing on disk. Use Library Health to relink.", systemImage: "exclamationmark.triangle.fill")
+                    .font(DS.small).foregroundStyle(DS.amber)
+            }
             VStack(spacing: 0) {
                 KeyValueRow("File", asset.filename)
                 KeyValueRow("Size", "\(asset.kind == "audio" ? "Audio" : asset.dimensions) · \(asset.format.uppercased()) · \(ByteCountFormatter.string(fromByteCount: Int64(asset.bytes), countStyle: .file))")
@@ -431,8 +465,11 @@ struct AssetDetails: View {
             TextField("Alt text", text: $asset.altText, axis: .vertical).lineLimit(1...3).fieldStyle()
             TextField("Collection", text: $asset.collection).fieldStyle()
             TextField("Tags (comma separated)", text: $tagText).fieldStyle()
-                .onSubmit { asset.tags = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty } }
+                .focused($tagsFocused)
+                .onSubmit { commitTags() }
+                .onChange(of: tagsFocused) { if !tagsFocused { commitTags() } }
                 .onAppear { tagText = asset.tags.joined(separator: ", ") }
+                .onChange(of: asset.uuid) { tagText = asset.tags.joined(separator: ", ") }
             Toggle("Favorite", isOn: $asset.isFavorite).toggleStyle(SFToggleStyle()).font(DS.body)
             let variants = model.variants(of: asset.uuid)
             if !variants.isEmpty {
@@ -451,6 +488,90 @@ struct AssetDetails: View {
                     }
                 }
             }
+        }
+    }
+
+    private func commitTags() {
+        let parsed = tagText.split(separator: ",").map { $0.trimmingCharacters(in: .whitespaces) }.filter { !$0.isEmpty }
+        if parsed != asset.tags {
+            asset.tags = parsed
+            try? model.context.save()
+        }
+    }
+}
+
+/// Inspects missing files, orphaned files in managed storage, and lets users relink broken assets safely.
+struct LibraryHealthSheet: View {
+    let assets: [MediaAsset]
+    @Environment(AppModel.self) private var model
+    @Environment(\.dismiss) private var dismiss
+    @State private var statusMessage: String?
+
+    private var missingAssets: [MediaAsset] { assets.filter { !$0.fileExists } }
+    private var totalBytes: Int64 { assets.reduce(0) { $0 + Int64($1.bytes) } }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Space.lg) {
+            HStack {
+                Text("Media Library Health").font(DS.display(24))
+                Spacer()
+                Button("Done") { dismiss() }.buttonStyle(SecondaryButtonStyle())
+            }
+            VStack(spacing: 0) {
+                KeyValueRow("Library Folder", model.storage.root.path)
+                KeyValueRow("Managed Assets", "\(assets.count)")
+                KeyValueRow("Total Managed Size", ByteCountFormatter.string(fromByteCount: totalBytes, countStyle: .file))
+                KeyValueRow("Missing Files", "\(missingAssets.count)")
+            }
+            .card(padding: Space.md)
+
+            if missingAssets.isEmpty {
+                Label("Every asset in this brand workspace is present and readable on disk.", systemImage: "checkmark.circle.fill")
+                    .font(DS.body).foregroundStyle(DS.green)
+            } else {
+                Text("Missing Files (\(missingAssets.count))").font(DS.bodyMedium)
+                ScrollView {
+                    VStack(alignment: .leading, spacing: Space.sm) {
+                        ForEach(missingAssets) { asset in
+                            HStack {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text(asset.filename).font(DS.bodyMedium)
+                                    Text(asset.storedPath).font(DS.mono).foregroundStyle(DS.text3).lineLimit(1).truncationMode(.middle)
+                                }
+                                Spacer()
+                                Button("Relink…") { relink(asset) }.buttonStyle(SecondaryButtonStyle())
+                            }
+                            .card(padding: Space.sm)
+                        }
+                    }
+                }
+                .frame(maxHeight: 220)
+            }
+            if let statusMessage {
+                Text(statusMessage).font(DS.small).foregroundStyle(DS.textBody)
+            }
+        }
+        .padding(Space.xl)
+        .frame(width: 560)
+        .background(DS.panel)
+    }
+
+    private func relink(_ asset: MediaAsset) {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.message = "Choose a replacement file for “\(asset.filename)”."
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try FileManager.default.createDirectory(at: asset.storedURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: asset.storedPath) {
+                try FileManager.default.removeItem(at: asset.storedURL)
+            }
+            try FileManager.default.copyItem(at: url, to: asset.storedURL)
+            ThumbnailCache.shared.invalidate(asset.storedPath)
+            statusMessage = "Relinked “\(asset.filename)”."
+        } catch {
+            statusMessage = "Could not relink: \(error.localizedDescription)"
         }
     }
 }

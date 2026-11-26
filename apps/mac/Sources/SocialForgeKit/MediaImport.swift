@@ -33,6 +33,33 @@ public enum MediaFormats {
         if audio.contains(where: { type.conforms(to: $0) }) { return .audio }
         return nil
     }
+
+    public static func isVideo(_ url: URL) -> Bool {
+        kind(of: url) == .video
+    }
+
+    /// Accurate MIME content type derived from file extension / UTType.
+    public static func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "jpg", "jpeg": "image/jpeg"
+        case "png": "image/png"
+        case "webp": "image/webp"
+        case "heic", "heif": "image/heic"
+        case "gif": "image/gif"
+        case "bmp": "image/bmp"
+        case "tif", "tiff": "image/tiff"
+        case "mp4", "m4v": "video/mp4"
+        case "mov": "video/quicktime"
+        case "webm": "video/webm"
+        case "mp3": "audio/mpeg"
+        case "m4a": "audio/mp4"
+        case "wav": "audio/wav"
+        case "aif", "aiff": "audio/aiff"
+        case "flac": "audio/flac"
+        default:
+            UTType(filenameExtension: url.pathExtension.lowercased())?.preferredMIMEType ?? "application/octet-stream"
+        }
+    }
 }
 
 public enum MediaScanner {
@@ -199,17 +226,18 @@ public enum MediaImporter {
                     do {
                         let hash = try ContentHash.sha256(of: file.url)
                         if known.contains(hash) { return (index, file, .success(nil), hash) }
-                        let stored = try storage.importCopy(of: file.url, hash: hash)
-                        let bytes = (try? file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
-                        let info = file.kind == .image ? ImageProbe.info(stored) : nil
+                        // Probe readability before copying into Originals so corrupt files never orphan on disk.
+                        let info = file.kind == .image ? ImageProbe.info(file.url) : nil
                         if file.kind == .image && info == nil {
                             return (index, file, .failure(CocoaError(.fileReadCorruptFile)), hash)
                         }
                         var av: AVMediaInfo?
                         if file.kind != .image {
-                            av = await AVProbe.info(stored)
+                            av = await AVProbe.info(file.url)
                             if av == nil { return (index, file, .failure(CocoaError(.fileReadUnknown)), hash) }
                         }
+                        let stored = try storage.importCopy(of: file.url, hash: hash)
+                        let bytes = (try? file.url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
                         return (index, file, .success(.init(source: file.url, stored: stored, hash: hash, bytes: bytes, kind: file.kind, info: info, av: av)), hash)
                     } catch {
                         return (index, file, .failure(error), nil)

@@ -4,6 +4,15 @@ import Foundation
 public enum API {
     public struct Health: Codable, Sendable, Equatable { public let status: String; public let db: String? }
     public struct Version: Codable, Sendable, Equatable { public let name: String; public let version: String; public let commit: String? }
+    public struct Capabilities: Codable, Sendable, Equatable {
+        public let apiVersion: Int
+        public let platforms: [String]
+        public let features: [String]
+        public let maxUploadBytes: Int?
+        public init(apiVersion: Int = 1, platforms: [String], features: [String] = [], maxUploadBytes: Int? = nil) {
+            self.apiVersion = apiVersion; self.platforms = platforms; self.features = features; self.maxUploadBytes = maxUploadBytes
+        }
+    }
 
     public struct Account: Codable, Sendable, Equatable, Identifiable {
         public let id: String
@@ -121,12 +130,13 @@ public struct BackendClient: Sendable {
 
     public func health() async throws(ClientError) -> API.Health { try await get("health", auth: false) }
     public func version() async throws(ClientError) -> API.Version { try await get("version", auth: false) }
+    public func capabilities() async throws(ClientError) -> API.Capabilities { try await get("v1/capabilities", auth: false) }
     public func accounts() async throws(ClientError) -> [API.Account] { try await (get("v1/accounts") as API.Accounts).accounts }
     public func boards(account: String) async throws(ClientError) -> [API.Board] {
-        try await (get("v1/accounts/\(account)/boards") as API.Boards).boards
+        try await (get("v1/accounts/\(Self.encodeSegment(account))/boards") as API.Boards).boards
     }
     public func connect(platform: String) async throws(ClientError) -> URL {
-        let r: API.Connect = try await send("POST", "v1/accounts/\(platform)/connect", body: Data("{}".utf8))
+        let r: API.Connect = try await send("POST", "v1/accounts/\(Self.encodeSegment(platform))/connect", body: Data("{}".utf8))
         guard let url = URL(string: r.authorizeUrl) else { throw .decoding("authorizeUrl") }
         return url
     }
@@ -135,7 +145,7 @@ public struct BackendClient: Sendable {
     public func upload(file: URL, sha256: String, contentType: String) async throws(ClientError) -> API.MediaUpload {
         let data: Data
         do { data = try Data(contentsOf: file) } catch { throw .unreachable(error.localizedDescription) }
-        return try await send("PUT", "v1/media/\(sha256)", body: data, contentType: contentType)
+        return try await send("PUT", "v1/media/\(Self.encodeSegment(sha256))", body: data, contentType: contentType)
     }
 
     public func create(_ pubs: [API.NewPublication]) async throws(ClientError) -> [API.Publication] {
@@ -151,13 +161,20 @@ public struct BackendClient: Sendable {
     }
 
     public func cancel(publication id: String) async throws(ClientError) -> API.Publication {
-        try await send("POST", "v1/publications/\(id)/cancel", body: Data("{}".utf8))
+        try await send("POST", "v1/publications/\(Self.encodeSegment(id))/cancel", body: Data("{}".utf8))
     }
 
     // MARK: - Plumbing
 
-    func request(_ method: String, _ path: String, auth: Bool) -> URLRequest {
-        var req = URLRequest(url: URL(string: path, relativeTo: baseURL.appending(path: ""))!.absoluteURL)
+    static func encodeSegment(_ s: String) -> String {
+        s.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed.subtracting(CharacterSet(charactersIn: "/?&#"))) ?? s
+    }
+
+    func request(_ method: String, _ path: String, auth: Bool) throws(ClientError) -> URLRequest {
+        guard let url = URL(string: path, relativeTo: baseURL.appending(path: ""))?.absoluteURL else {
+            throw .unreachable("Invalid service URL path: \(path)")
+        }
+        var req = URLRequest(url: url)
         req.httpMethod = method
         req.timeoutInterval = 20
         req.setValue("application/json", forHTTPHeaderField: "Accept")
@@ -166,11 +183,11 @@ public struct BackendClient: Sendable {
     }
 
     func get<T: Decodable>(_ path: String, auth: Bool = true) async throws(ClientError) -> T {
-        try await perform(request("GET", path, auth: auth))
+        try await perform(try request("GET", path, auth: auth))
     }
 
     func send<T: Decodable>(_ method: String, _ path: String, body: Data, contentType: String = "application/json") async throws(ClientError) -> T {
-        var req = request(method, path, auth: true)
+        var req = try request(method, path, auth: true)
         req.httpBody = body
         req.setValue(contentType, forHTTPHeaderField: "Content-Type")
         return try await perform(req)
@@ -231,7 +248,7 @@ public enum SyncMerge {
             if ["published", "canceled"].contains(row.status) && row.status != s.status && s.status != "published" { return row }
             var next = row
             next.serverId = s.id
-            next.status = s.status
+            next.status = s.status == "queued" ? "scheduled" : s.status
             next.publishedUrl = s.publishedUrl ?? row.publishedUrl
             next.lastError = s.lastError
             next.attempts = s.attempts

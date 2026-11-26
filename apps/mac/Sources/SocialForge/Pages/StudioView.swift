@@ -10,6 +10,8 @@ struct StudioView: View {
     @State private var showSaveTemplate = false
     @State private var templateName = ""
     @State private var dropTargeted = false
+    @State private var showSafeZones = false
+    @State private var confirmClose = false
 
     private var studio: StudioModel { model.studio }
 
@@ -24,7 +26,7 @@ struct StudioView: View {
                     }
                     LayersPanel().padding(Space.lg)
                 }
-                .task(id: studio.revision &+ model.aiRevision &+ (model.brandKit?.colors.hashValue ?? 0) &+ Int(studio.time * 1000)) { await render() }
+                .task(id: renderKey) { await render() }
                 .onDisappear { studio.stop() }
                 .background { StudioDeleteKey(studio: studio) }
             } else {
@@ -39,11 +41,37 @@ struct StudioView: View {
         } message: {
             Text("Text, colors, fonts, and the logo stay tied to the brand kit; the photo becomes a slot you fill per image.")
         }
+        .confirmationDialog("Close with unsaved changes?", isPresented: $confirmClose, titleVisibility: .visible) {
+            Button("Save & Close") { studio.save(model: model); studio.close() }
+            Button("Discard Changes", role: .destructive) { studio.close() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Your edits to “\(studio.document?.name ?? "this design")” have not been saved.")
+        }
+    }
+
+    private var renderKey: Int {
+        var h = Hasher()
+        h.combine(studio.revision)
+        h.combine(model.aiRevision)
+        h.combine(model.brandKit?.colors)
+        h.combine(model.brandKit?.headlineFont)
+        h.combine(model.brandKit?.bodyFont)
+        h.combine(model.brandKit?.logoPath)
+        // Quantize video preview time to ~15fps so rapid 80ms ticks don't cancel in-flight frame decodes.
+        h.combine(Int((studio.time * 15).rounded()))
+        return h.finalize()
     }
 
     private func canvasArea(_ doc: CreativeDocument) -> some View {
         VStack(spacing: Space.md) {
-            ToolBar(saveAsTemplate: { templateName = doc.name; showSaveTemplate = true })
+            ToolBar(
+                saveAsTemplate: { templateName = doc.name; showSaveTemplate = true },
+                showSafeZones: $showSafeZones,
+                requestClose: {
+                    if studio.hasUnsavedChanges { confirmClose = true } else { studio.close() }
+                }
+            )
             HStack {
                 Text("\(StudioModel.category(for: doc)) · \(doc.width) × \(doc.height)").font(DS.small).foregroundStyle(DS.text2)
                 if studio.templateID != nil {
@@ -64,6 +92,16 @@ struct StudioView: View {
                         hitArea(layer)
                     }
                     if let sel = studio.selected, !sel.isHidden { selection(sel) }
+                    if showSafeZones {
+                        // Safe-zone guide (top 14% / bottom 20% UI overlay margin for Reels/TikTok/Shorts/Pins).
+                        let w = Double(doc.width) * studio.zoom
+                        let h = Double(doc.height) * studio.zoom
+                        Rectangle()
+                            .strokeBorder(DS.amber.opacity(0.85), style: StrokeStyle(lineWidth: 2, dash: [8, 4]))
+                            .frame(width: w * 0.84, height: h * 0.66)
+                            .offset(x: w * 0.08, y: h * 0.14)  // grid: ok canvas safe zone overlay
+                            .allowsHitTesting(false)
+                    }
                 }
                 .frame(width: Double(doc.width) * studio.zoom, height: Double(doc.height) * studio.zoom)
                 .clipped()
@@ -207,6 +245,8 @@ extension StudioModel {
 struct ToolBar: View {
     @Environment(AppModel.self) private var model
     let saveAsTemplate: () -> Void
+    @Binding var showSafeZones: Bool
+    let requestClose: () -> Void
 
     var body: some View {
         let studio = model.studio
@@ -265,6 +305,10 @@ struct ToolBar: View {
                 .menuStyle(.button).buttonStyle(IconButtonStyle(selected: studio.tool == .resize)).menuIndicator(.hidden).fixedSize()
                 .help("Resize the canvas for another platform (text stays live)")
                 Divider().frame(height: 20).padding(.horizontal, Space.xs)
+                Button("Safe Zones", systemImage: "viewfinder") { showSafeZones.toggle() }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(IconButtonStyle(selected: showSafeZones))
+                    .help("Show platform safe-zone overlay (Reels, TikTok, Shorts UI margins)")
                 Menu {
                     ForEach([0.25, 0.36, 0.5, 0.75, 1.0], id: \.self) { z in Button("\(Int(z * 100))%") { model.studio.zoom = z } }
                 } label: { Text("\(Int(studio.zoom * 100))%").font(DS.small).monospacedDigit().foregroundStyle(DS.text2) }
@@ -281,7 +325,7 @@ struct ToolBar: View {
                     Button(studio.templateID != nil ? "Save Template" : "Save Design") { studio.save(model: model) }
                     Button("Save as Brand Template…", action: saveAsTemplate)
                     Divider()
-                    Button("Close") { studio.selectedLayer = nil; studio.selectedAudio = nil; studio.document = nil }
+                    Button("Close", action: requestClose)
                 }
                 .menuStyle(.button).buttonStyle(SecondaryButtonStyle()).fixedSize()
                 .background { Button("") { studio.save(model: model) }.keyboardShortcut("s").opacity(0) }
@@ -331,48 +375,53 @@ struct LayersPanel: View {
                 .menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden).fixedSize().foregroundStyle(DS.text2)
             }
             .padding(.horizontal, Space.sm).padding(.bottom, Space.xs)
-            ForEach((studio.document?.layers ?? []).reversed()) { layer in
-                let selected = studio.selectedLayer == layer.id
-                HStack(spacing: Space.sm) {
-                    Image(systemName: icon(layer)).font(.system(size: 12)).foregroundStyle(selected ? DS.accent : DS.text2).frame(width: 16)
-                    Text(layer.name).font(DS.body).foregroundStyle(layer.isHidden ? DS.text3 : DS.text).lineLimit(1)
-                    if layer.group != nil { Image(systemName: "link").font(.system(size: 9)).foregroundStyle(DS.text3) }
-                    Spacer()
-                    Text(kind(layer)).font(DS.caption).foregroundStyle(DS.text3)
-                    if layer.isLocked { Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(DS.text3) }
-                }
-                .padding(.horizontal, Space.sm).frame(height: 32)
-                .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                .contentShape(Rectangle())
-                .onTapGesture { studio.selectedLayer = layer.id; studio.selectedAudio = nil }
-                .contextMenu {
-                    Button(layer.isHidden ? "Show" : "Hide") { studio.changeLayer(layer.id) { $0.isHidden.toggle() } }
-                    Button(layer.isLocked ? "Unlock" : "Lock") { studio.changeLayer(layer.id) { $0.isLocked.toggle() } }
-                    Button(layer.group == nil ? "Group with Layer Below" : "Ungroup") { studio.toggleGroup(layer.id) }
-                    Button("Duplicate") { studio.duplicateLayer(layer.id) }
-                    Button("Bring Forward") { studio.move(layer.id, by: 1) }
-                    Button("Send Backward") { studio.move(layer.id, by: -1) }
-                    Divider()
-                    Button("Delete", role: .destructive) { studio.delete(layer.id) }.disabled(layer.isLocked)
-                }
-            }
-            if let tracks = studio.document?.audioTracks, !tracks.isEmpty {
-                Text("Audio").font(DS.caption).foregroundStyle(DS.text3).padding(.horizontal, Space.sm).padding(.top, Space.sm)
-                ForEach(tracks) { track in
-                    let selected = studio.selectedAudio == track.id
-                    HStack(spacing: Space.sm) {
-                        Image(systemName: "waveform").font(.system(size: 12)).foregroundStyle(selected ? DS.accent : DS.text2).frame(width: 16)
-                        Text(track.name).font(DS.body).foregroundStyle(DS.text).lineLimit(1)
-                        Spacer()
-                        Text("Audio").font(DS.caption).foregroundStyle(DS.text3)
+            ScrollView {
+                VStack(alignment: .leading, spacing: 2) {
+                    ForEach((studio.document?.layers ?? []).reversed()) { layer in
+                        let selected = studio.selectedLayer == layer.id
+                        HStack(spacing: Space.sm) {
+                            Image(systemName: icon(layer)).font(.system(size: 12)).foregroundStyle(selected ? DS.accent : DS.text2).frame(width: 16)
+                            Text(layer.name).font(DS.body).foregroundStyle(layer.isHidden ? DS.text3 : DS.text).lineLimit(1)
+                            if layer.group != nil { Image(systemName: "link").font(.system(size: 9)).foregroundStyle(DS.text3) }
+                            Spacer()
+                            Text(kind(layer)).font(DS.caption).foregroundStyle(DS.text3)
+                            if layer.isLocked { Image(systemName: "lock.fill").font(.system(size: 9)).foregroundStyle(DS.text3) }
+                        }
+                        .padding(.horizontal, Space.sm).frame(height: 32)
+                        .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                        .contentShape(Rectangle())
+                        .onTapGesture { studio.selectedLayer = layer.id; studio.selectedAudio = nil }
+                        .contextMenu {
+                            Button(layer.isHidden ? "Show" : "Hide") { studio.changeLayer(layer.id) { $0.isHidden.toggle() } }
+                            Button(layer.isLocked ? "Unlock" : "Lock") { studio.changeLayer(layer.id) { $0.isLocked.toggle() } }
+                            Button(layer.group == nil ? "Group with Layer Below" : "Ungroup") { studio.toggleGroup(layer.id) }
+                            Button("Duplicate") { studio.duplicateLayer(layer.id) }
+                            Button("Bring Forward") { studio.move(layer.id, by: 1) }
+                            Button("Send Backward") { studio.move(layer.id, by: -1) }
+                            Divider()
+                            Button("Delete", role: .destructive) { studio.delete(layer.id) }.disabled(layer.isLocked)
+                        }
                     }
-                    .padding(.horizontal, Space.sm).frame(height: 32)
-                    .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-                    .contentShape(Rectangle())
-                    .onTapGesture { studio.selectedAudio = track.id; studio.selectedLayer = nil }
-                    .contextMenu { Button("Remove", role: .destructive) { studio.removeTrack(track.id) } }
+                    if let tracks = studio.document?.audioTracks, !tracks.isEmpty {
+                        Text("Audio").font(DS.caption).foregroundStyle(DS.text3).padding(.horizontal, Space.sm).padding(.top, Space.sm)
+                        ForEach(tracks) { track in
+                            let selected = studio.selectedAudio == track.id
+                            HStack(spacing: Space.sm) {
+                                Image(systemName: "waveform").font(.system(size: 12)).foregroundStyle(selected ? DS.accent : DS.text2).frame(width: 16)
+                                Text(track.name).font(DS.body).foregroundStyle(DS.text).lineLimit(1)
+                                Spacer()
+                                Text("Audio").font(DS.caption).foregroundStyle(DS.text3)
+                            }
+                            .padding(.horizontal, Space.sm).frame(height: 32)
+                            .background(selected ? DS.accentSoft : .clear, in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+                            .contentShape(Rectangle())
+                            .onTapGesture { studio.selectedAudio = track.id; studio.selectedLayer = nil }
+                            .contextMenu { Button("Remove", role: .destructive) { studio.removeTrack(track.id) } }
+                        }
+                    }
                 }
             }
+            .frame(maxHeight: 420)
         }
         .padding(Space.sm)
         .frame(width: 220)
@@ -694,6 +743,18 @@ struct StudioInspector: View {
                 HStack {
                     Text("Border").font(DS.body).foregroundStyle(DS.text2)
                     Slider(value: shapeBind(layer.id, \.borderWidth), in: 0...20)
+                    ColorPicker("", selection: Binding<Color>(
+                        get: { Color(cgColor: (s.border ?? RGBA.white).cgColor) },
+                        set: { c in
+                            let ns = NSColor(c).usingColorSpace(.sRGB) ?? .white
+                            studio.changeLayer(layer.id) { l in
+                                if case .shape(var x) = l.content {
+                                    x.border = RGBA(ns.redComponent, ns.greenComponent, ns.blueComponent, ns.alphaComponent)
+                                    l.content = .shape(x)
+                                }
+                            }
+                        }
+                    )).labelsHidden().help("Border color")
                 }
             }
             if case .image(let i) = layer.content {
@@ -955,8 +1016,6 @@ struct StudioInspector: View {
             LazyVGrid(columns: [GridItem(.flexible(), spacing: Space.sm), GridItem(.flexible(), spacing: Space.sm)], spacing: Space.sm) {
                 op("Remove BG", "scissors", "Cut out the subject with Vision, on this Mac") { await studio.run(.removeBackground, model: model) }
                 op("Upscale 2×", "arrow.up.left.and.arrow.down.right", "Lanczos resize with light sharpening (not AI super-resolution)") { await studio.run(.upscale, model: model) }
-                unavailable("Extend", "arrow.up.backward.and.arrow.down.forward", "Needs an image provider with outpainting (milestone 5)")
-                unavailable("Relight", "sun.max", "Needs an AI image provider (milestone 5)")
                 op("Brand color", "drop", "Tone the image toward the brand accent color") { await studio.run(.brandTint, model: model) }
                 op("Smart crop", "viewfinder", "Center the crop on the most eye-catching area (Vision)") { await studio.run(.smartCrop, model: model) }
             }
@@ -1091,10 +1150,18 @@ struct StudioInspector: View {
     // binding once more after its layer is deleted or the design is closed, and a
     // force-unwrap there crashed the app (Close or Delete with a text layer selected).
 
-    private func bind<T>(_ id: UUID, _ kp: WritableKeyPath<CreativeLayer, T>) -> Binding<T> {
-        let initial = studio.document?.layers.first { $0.id == id }?[keyPath: kp]
-        return Binding(get: { studio.document?.layers.first { $0.id == id }?[keyPath: kp] ?? initial! },
+    private func bind<T>(_ id: UUID, _ kp: WritableKeyPath<CreativeLayer, T>, fallback: T) -> Binding<T> {
+        let initial = studio.document?.layers.first { $0.id == id }?[keyPath: kp] ?? fallback
+        return Binding(get: { studio.document?.layers.first { $0.id == id }?[keyPath: kp] ?? initial },
                        set: { v in studio.changeLayer(id) { $0[keyPath: kp] = v } })
+    }
+
+    private func bind(_ id: UUID, _ kp: WritableKeyPath<CreativeLayer, Double>) -> Binding<Double> {
+        bind(id, kp, fallback: 0)
+    }
+
+    private func bind(_ id: UUID, _ kp: WritableKeyPath<CreativeLayer, Bool>) -> Binding<Bool> {
+        bind(id, kp, fallback: false)
     }
 
     private func textBind<T>(_ id: UUID, _ kp: WritableKeyPath<TextLayer, T>) -> Binding<T> {

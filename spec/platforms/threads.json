@@ -34,6 +34,15 @@
         "threads_content_publish"
       ],
       "needsDestination": "none"
+    },
+    {
+      "id": "carousel",
+      "name": "Carousel (needs public media storage)",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
     }
   ],
   "text": {

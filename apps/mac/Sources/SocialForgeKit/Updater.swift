@@ -28,13 +28,28 @@ public enum UpdateCheck: Sendable, Equatable {
 
 public enum AppVersion {
     /// Compares dotted versions numerically. "v0.10" is newer than "0.9". Missing parts count as 0.
+    /// A stable release ("1.2.0") is newer than a prerelease of the same version ("1.2.0-beta").
     public static func isNewer(_ candidate: String, than current: String) -> Bool {
         let a = parts(candidate), b = parts(current)
         for i in 0..<max(a.count, b.count) {
             let x = i < a.count ? a[i] : 0, y = i < b.count ? b[i] : 0
             if x != y { return x > y }
         }
-        return false
+        let aPre = prerelease(candidate), bPre = prerelease(current)
+        switch (aPre, bPre) {
+        case (nil, .some): return true
+        case (.some, nil): return false
+        case let (.some(x), .some(y)): return x.localizedStandardCompare(y) == .orderedDescending
+        case (nil, nil): return false
+        }
+    }
+
+    static func prerelease(_ text: String) -> String? {
+        var t = Substring(text.trimmingCharacters(in: .whitespaces))
+        if t.first == "v" || t.first == "V" { t = t.dropFirst() }
+        guard let dash = t.firstIndex(of: "-") else { return nil }
+        let suffix = String(t[t.index(after: dash)...]).trimmingCharacters(in: .whitespaces)
+        return suffix.isEmpty ? nil : suffix
     }
 
     static func parts(_ text: String) -> [Int] {
@@ -124,7 +139,7 @@ public struct UpdateInstaller: Sendable {
     }
 
     public enum Failure: Error, CustomStringConvertible, Equatable, LocalizedError {
-        case download(String), unpack, noApp, signature(String), team(expected: String, found: String)
+        case download(String), unpack, noApp, signature(String), team(expected: String, found: String), bundleID(expected: String, found: String)
         public var description: String {
             switch self {
             case .download(let why): "The download failed: \(why)"
@@ -132,6 +147,7 @@ public struct UpdateInstaller: Sendable {
             case .noApp: "The zip has no SocialForge.app inside."
             case .signature(let why): "The new app's signature is not valid, so it was not installed. \(why)"
             case .team(let expected, let found): "The new app is signed by \(found), not \(expected), so it was not installed."
+            case .bundleID(let expected, let found): "The downloaded app bundle identifier (\(found)) does not match \(expected), so it was not installed."
             }
         }
         public var errorDescription: String? { description }
@@ -150,6 +166,7 @@ public struct UpdateInstaller: Sendable {
         let config = URLSessionConfiguration.ephemeral
         config.timeoutIntervalForResource = 600
         let session = URLSession(configuration: config, delegate: RedirectGuard(), delegateQueue: nil)
+        defer { session.finishTasksAndInvalidate() }
         let (temporary, response) = try await session.download(from: release.downloadURL)
         guard let http = response as? HTTPURLResponse, http.statusCode == 200 else {
             throw Failure.download("GitHub answered \((response as? HTTPURLResponse)?.statusCode ?? 0)")
@@ -189,10 +206,14 @@ public struct UpdateInstaller: Sendable {
         return nil
     }
 
-    /// The signature must be valid, and from the same team as the running app.
-    public func verify(_ app: URL, sameTeamAs current: URL) async throws {
+    /// The signature must be valid, have the expected bundle identifier, and be from the same team as the running app.
+    public func verify(_ app: URL, sameTeamAs current: URL, expectedBundleID: String = "com.socialforge.app") async throws {
         let r = try await Self.run("/usr/bin/codesign", ["--verify", "--deep", "--strict", app.path])
         guard r.status == 0 else { throw Failure.signature(r.output.trimmingCharacters(in: .whitespacesAndNewlines)) }
+        let foundBundleID = Bundle(url: app)?.bundleIdentifier ?? ""
+        guard foundBundleID == expectedBundleID else {
+            throw Failure.bundleID(expected: expectedBundleID, found: foundBundleID.isEmpty ? "none" : foundBundleID)
+        }
         // An unsigned copy cannot tell a genuine update from any other signed app, so it does not install one.
         guard let expected = await teamIdentifier(of: current) else {
             throw Failure.signature("This copy of SocialForge is not signed by a team, so updates are installed by hand.")

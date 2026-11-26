@@ -18,12 +18,7 @@ enum PlatformSpecData {
     {
       "title": "Reels Publishing API",
       "url": "https://developers.facebook.com/documentation/video-api/guides/reels-publishing",
-      "checked": "2026-11-19"
-    },
-    {
-      "title": "Reels Publishing API",
-      "url": "https://developers.facebook.com/docs/video-api/guides/reels-publishing",
-      "checked": "2026-11-19"
+      "checked": "2026-11-26"
     }
   ],
   "contentTypes": [
@@ -91,6 +86,7 @@ enum PlatformSpecData {
     "audio": [
       "aac"
     ],
+    "maxBytes": 1073741824,
     "minSeconds": 3,
     "maxSeconds": 90,
     "recommended": {
@@ -141,6 +137,15 @@ enum PlatformSpecData {
     {
       "id": "reel",
       "name": "Reel",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "carousel",
+      "name": "Carousel (needs public media storage)",
       "requiredScopes": [
         "instagram_basic",
         "instagram_content_publish"
@@ -199,8 +204,8 @@ enum PlatformSpecData {
 {
   "platform": "linkedin",
   "name": "LinkedIn",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -245,14 +250,15 @@ enum PlatformSpecData {
       "png",
       "gif"
     ],
-    "maxBytes": 36152320,
-    "maxBytesEnforced": false,
+    "maxBytes": 5242880,
+    "maxBytesEnforced": true,
     "recommended": {
       "width": 1200,
       "height": 627,
       "aspect": "1.91:1"
     },
-    "recommendedMinWidth": 552
+    "recommendedMinWidth": 552,
+    "note": "LinkedIn Images API: up to 5 MB and 36.15 megapixels (JPEG, PNG, GIF)."
   },
   "video": {
     "formats": [
@@ -310,6 +316,15 @@ enum PlatformSpecData {
     {
       "id": "image_pin",
       "name": "Image Pin",
+      "requiredScopes": [
+        "boards:read",
+        "pins:write"
+      ],
+      "needsDestination": "board"
+    },
+    {
+      "id": "video_pin",
+      "name": "Video Pin",
       "requiredScopes": [
         "boards:read",
         "pins:write"
@@ -418,6 +433,15 @@ enum PlatformSpecData {
         "threads_content_publish"
       ],
       "needsDestination": "none"
+    },
+    {
+      "id": "carousel",
+      "name": "Carousel (needs public media storage)",
+      "requiredScopes": [
+        "threads_basic",
+        "threads_content_publish"
+      ],
+      "needsDestination": "none"
     }
   ],
   "text": {
@@ -472,8 +496,8 @@ enum PlatformSpecData {
 {
   "platform": "tiktok",
   "name": "TikTok",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -489,16 +513,16 @@ enum PlatformSpecData {
   ],
   "contentTypes": [
     {
-      "id": "video",
-      "name": "Video",
+      "id": "inbox_video",
+      "name": "Creator Inbox Video Draft",
       "requiredScopes": [
-        "video.publish"
+        "video.upload"
       ],
       "needsDestination": "none"
     },
     {
-      "id": "photo",
-      "name": "Photo post",
+      "id": "video",
+      "name": "Direct Video Post (audited app)",
       "requiredScopes": [
         "video.publish"
       ],
@@ -509,7 +533,7 @@ enum PlatformSpecData {
     "caption": {
       "max": 2200,
       "required": false,
-      "enforced": false
+      "enforced": true
     }
   },
   "image": {
@@ -558,8 +582,8 @@ enum PlatformSpecData {
 {
   "platform": "x",
   "name": "X",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -586,6 +610,16 @@ enum PlatformSpecData {
     {
       "id": "image_post",
       "name": "Post with image",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read",
+        "media.write"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "video_post",
+      "name": "Post with video",
       "requiredScopes": [
         "tweet.write",
         "users.read",
@@ -645,8 +679,8 @@ enum PlatformSpecData {
 {
   "platform": "youtube",
   "name": "YouTube Shorts",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -663,7 +697,15 @@ enum PlatformSpecData {
   "contentTypes": [
     {
       "id": "short",
-      "name": "Short",
+      "name": "Short (vertical/square ≤ 3 min)",
+      "requiredScopes": [
+        "https://www.googleapis.com/auth/youtube.upload"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "video",
+      "name": "Video",
       "requiredScopes": [
         "https://www.googleapis.com/auth/youtube.upload"
       ],

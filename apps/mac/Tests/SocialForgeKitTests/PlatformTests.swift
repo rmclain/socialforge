@@ -19,14 +19,14 @@ struct PlatformTests {
 
     @Test func registryDecodesEveryPlatform() {
         #expect(Set(PlatformRegistry.all.map(\.platform)) == ["pinterest", "x", "linkedin", "facebook", "tiktok", "instagram", "youtube", "threads"])
-        #expect(Set(PlatformRegistry.all.filter(\.isAvailable).map(\.platform)) == ["pinterest", "facebook", "instagram", "threads"])
+        #expect(Set(PlatformRegistry.all.filter(\.isAvailable).map(\.platform)) == ["pinterest", "facebook", "instagram", "threads", "linkedin", "x", "tiktok", "youtube"])
         // Built, never claimed as verified live.
         #expect(PlatformRegistry.all.allSatisfy { !$0.liveVerified })
         #expect(PlatformStatus.summary(PlatformRegistry.spec("instagram")!).contains("not yet verified live"))
         #expect(PlatformRegistry.all.allSatisfy { $0.video != nil })
         #expect(PlatformRegistry.spec("youtube")?.image == nil)
         #expect(PlatformRegistry.spec("pinterest")?.isAvailable == true)
-        #expect(PlatformRegistry.spec("x")?.isAvailable == false)
+        #expect(PlatformRegistry.spec("linkedin")?.image?.maxBytes == 5_242_880)
         #expect(PlatformRegistry.all.allSatisfy { !$0.liveVerified })
     }
 
@@ -60,8 +60,24 @@ struct PlatformTests {
         #expect(heic.contains { $0.level == .info && $0.message.contains("2:3") })
     }
 
-    @Test func plannedPlatformIsAnError() {
-        #expect(PostValidator.validate(PostDraft(platform: "x", description: "hi")).contains { $0.field == "platform" && $0.level == .error })
+    @Test func allPlatformsValidateTextAndXWeightedLength() {
+        // X weighted counting: URL counts as 23 chars even if longer; empty X text fails required check.
+        #expect(PostValidator.validate(PostDraft(platform: "x", description: "")).contains { $0.field == "text" && $0.level == .error })
+        let url = "https://example.com/very/long/product/url/that/exceeds/twenty-three/characters"
+        #expect(XTextLength.weightedCount("Hi \(url)") == 3 + 23)
+        #expect(PostValidator.validate(PostDraft(platform: "x", description: String(repeating: "a", count: 281))).contains { $0.field == "text" && $0.level == .error })
+        // Instagram caption max 2200 & public media host check for image posts.
+        let igOver = PostValidator.validate(PostDraft(platform: "instagram", description: String(repeating: "c", count: 2201),
+                                                      image: ImageFacts(width: 1080, height: 1350, bytes: 100_000, format: "jpeg"),
+                                                      hasPublicMediaHost: false))
+        #expect(igOver.contains { $0.field == "caption" && $0.level == .error })
+        #expect(igOver.contains { $0.field == "storage" && $0.level == .error })
+        // LinkedIn requires commentary.
+        #expect(PostValidator.validate(PostDraft(platform: "linkedin", description: "")).contains { $0.field == "commentary" && $0.level == .error })
+        // YouTube requires title and Shorts requires vertical/square aspect.
+        #expect(PostValidator.validate(PostDraft(platform: "youtube", title: "")).contains { $0.field == "title" && $0.level == .error })
+        let badShort = PostValidator.validateVideo(platform: "youtube", seconds: 30, width: 1920, height: 1080, bytes: 1_000_000, format: "mp4", requireShortsAspect: true)
+        #expect(badShort.contains { $0.level == .error && $0.message.contains("square or vertical") })
     }
 
     @Test func duplicatesAcrossARun() {
@@ -81,10 +97,12 @@ struct PlatformTests {
         #expect(readOnly.first?.reason?.contains("Reconnect") == true)
         let expired = Capabilities.forAccount(platform: "pinterest", grantedScopes: ["boards:read", "pins:write"], status: "expired")
         #expect(expired.first?.allowed == false)
-        let planned = Capabilities.forAccount(platform: "linkedin", grantedScopes: ["w_member_social"], status: "connected")
-        #expect(planned.allSatisfy { !$0.allowed })
-        let tiktok = Capabilities.forAccount(platform: "tiktok", grantedScopes: ["video.publish"], status: "connected")
-        #expect(tiktok.allSatisfy { !$0.allowed && $0.reason?.contains("Export the video from Studio") == true })
+        let liMember = Capabilities.forAccount(platform: "linkedin", grantedScopes: ["w_member_social"], status: "connected")
+        #expect(liMember.first(where: { $0.contentType.id == "member_post" })?.allowed == true)
+        #expect(liMember.first(where: { $0.contentType.id == "organization_post" })?.allowed == false)
+        let tiktokInbox = Capabilities.forAccount(platform: "tiktok", grantedScopes: ["video.upload"], status: "connected")
+        #expect(tiktokInbox.first(where: { $0.contentType.id == "inbox_video" })?.allowed == true)
+        #expect(tiktokInbox.first(where: { $0.contentType.id == "video" })?.allowed == false)
     }
 
     @Test func videoRules() {
@@ -112,8 +130,8 @@ struct PlatformTests {
         #expect(PostValidator.duration(90) == "1 min 30 s")
         #expect(PostValidator.duration(600) == "10 min")
         #expect(PostValidator.duration(45) == "45 s")
-        #expect(PlatformStatus.summary(PlatformRegistry.spec("tiktok")!).hasPrefix("Export only"))
-        #expect(PlatformStatus.summary(PlatformRegistry.spec("x")!).hasPrefix("Drafts only"))
+        #expect(PlatformStatus.summary(PlatformRegistry.spec("tiktok")!).contains("not yet verified live"))
+        #expect(PlatformStatus.summary(PlatformRegistry.spec("x")!).contains("not yet verified live"))
     }
 }
 

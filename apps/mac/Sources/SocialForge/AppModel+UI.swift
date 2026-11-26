@@ -65,12 +65,13 @@ extension AppModel {
     }
 
     var notificationCount: Int {
-        workspacePublications.filter { $0.status == .failed || $0.status == .needsReview }.count
+        workspacePublications.filter { $0.status.needsAttention }.count
     }
 
     var brandKit: BrandKit? {
         guard let workspaceID else { return nil }
-        return (try? context.fetch(FetchDescriptor<BrandKit>(predicate: #Predicate { $0.workspaceID == workspaceID })))?.first
+        let kits = (try? context.fetch(FetchDescriptor<BrandKit>(predicate: #Predicate { $0.workspaceID == workspaceID }, sortBy: [SortDescriptor(\.name)]))) ?? []
+        return kits.first(where: \.isPrimary) ?? kits.first
     }
 
     // MARK: ComfyUI

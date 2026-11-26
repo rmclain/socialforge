@@ -35,6 +35,15 @@
         "pins:write"
       ],
       "needsDestination": "board"
+    },
+    {
+      "id": "video_pin",
+      "name": "Video Pin",
+      "requiredScopes": [
+        "boards:read",
+        "pins:write"
+      ],
+      "needsDestination": "board"
     }
   ],
   "text": {

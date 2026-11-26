@@ -34,6 +34,12 @@ struct BrandKitsView: View {
                     KitCard(kit: k, selected: model.brandKitSelection == k.uuid)
                         .onTapGesture { model.brandKitSelection = k.uuid }
                         .contextMenu {
+                            if !k.isPrimary {
+                                Button("Set as Primary Brand Kit") {
+                                    for other in kits { other.isPrimary = (other.uuid == k.uuid) }
+                                    try? model.context.save()
+                                }
+                            }
                             Button("Export…") { BrandKitIO.export(k, templates: allTemplates.filter { $0.workspaceID == k.workspaceID }) }
                             Button("Delete", role: .destructive) { model.context.delete(k); try? model.context.save() }
                         }
@@ -76,11 +82,22 @@ struct KitCard: View {
                         WorkspaceBadge(name: kit.name, colorHex: kit.colors.dropFirst(2).first ?? 0xFF8A5C, size: 56)
                     }
                     VStack(alignment: .leading, spacing: 2) {
-                        Text(kit.name).font(.custom(kit.headlineFont, size: 28))
+                        HStack(spacing: Space.sm) {
+                            Text(kit.name).font(.custom(kit.headlineFont, size: 28))
+                            if kit.isPrimary {
+                                Text("Primary").font(DS.caption).foregroundStyle(DS.accent)
+                                    .padding(.horizontal, 8).padding(.vertical, 2)
+                                    .background(DS.accentSoft, in: Capsule())
+                            }
+                        }
                         Text("\(kit.headlineFont) · \(kit.bodyFont) · \(kit.colors.count) colors").font(DS.small).foregroundStyle(DS.text2)
                     }
                 }
-                HStack(spacing: 0) { ForEach(kit.colors, id: \.self) { Rectangle().fill(Color(hex: UInt32($0))) } }
+                HStack(spacing: 0) {
+                    ForEach(Array(kit.colors.enumerated()), id: \.offset) { _, hex in
+                        Rectangle().fill(Color(hex: UInt32(bitPattern: Int32(truncatingIfNeeded: hex)) & 0xFFFFFF))
+                    }
+                }
                     .frame(height: 44).clipShape(RoundedRectangle(cornerRadius: 8, style: .continuous))
                 if !kit.voice.isEmpty { Text("Voice: \(kit.voice)").font(DS.body).foregroundStyle(DS.textBody) }
                 if !kit.ctas.isEmpty || !kit.hashtags.isEmpty {
@@ -108,7 +125,7 @@ struct BrandKitInspector: View {
     @Query private var allKits: [BrandKit]
 
     var body: some View {
-        if let kit = allKits.first(where: { $0.uuid == model.brandKitSelection }) {
+        if let kit = allKits.first(where: { $0.uuid == model.brandKitSelection && $0.workspaceID == model.workspaceID }) {
             KitEditor(kit: kit)
         } else {
             VStack(spacing: 0) {
@@ -177,10 +194,13 @@ struct KitEditor: View {
                     ForEach(kit.colors.indices, id: \.self) { i in
                         HStack {
                             ColorPicker("", selection: Binding(
-                                get: { Color(hex: UInt32(kit.colors[i])) },
+                                get: { Color(hex: UInt32(bitPattern: Int32(truncatingIfNeeded: kit.colors[i])) & 0xFFFFFF) },
                                 set: { c in
                                     let ns = NSColor(c).usingColorSpace(.sRGB) ?? .black
-                                    kit.colors[i] = Int(ns.redComponent * 255) << 16 | Int(ns.greenComponent * 255) << 8 | Int(ns.blueComponent * 255)
+                                    let r = Int((ns.redComponent * 255).rounded())
+                                    let g = Int((ns.greenComponent * 255).rounded())
+                                    let b = Int((ns.blueComponent * 255).rounded())
+                                    kit.colors[i] = (r << 16) | (g << 8) | b
                                     model.aiRevision += 1
                                 }))
                             .labelsHidden()
@@ -211,11 +231,14 @@ struct KitEditor: View {
                     TextField("Preferred image style", text: $kit.imageStyle, prompt: Text("Warm natural light, linen, oak, negative space"), axis: .vertical).lineLimit(1...3).fieldStyle()
                     TextField("Calls to action (comma separated)", text: $ctaText).fieldStyle().onSubmit { kit.ctas = split(ctaText) }
                     TextField("Approved hashtags (comma separated)", text: $tagText).fieldStyle().onSubmit { kit.hashtags = split(tagText) }
+                    TextField("Brand website (optional)", text: $kit.website, prompt: Text("https://example.com")).fieldStyle()
+                    TextField("Default destination link (optional)", text: $kit.defaultLink, prompt: Text("https://example.com/shop")).fieldStyle()
                     Text("AI copy and backgrounds use the voice, audience, things to avoid, image style, CTAs, and hashtags.").font(DS.caption).foregroundStyle(DS.text3)
                 }
             }
         }
         .onAppear { ctaText = kit.ctas.joined(separator: ", "); tagText = kit.hashtags.joined(separator: ", ") }
+        .onChange(of: kit.uuid) { ctaText = kit.ctas.joined(separator: ", "); tagText = kit.hashtags.joined(separator: ", ") }
         .onDisappear { kit.ctas = split(ctaText); kit.hashtags = split(tagText); try? model.context.save() }
     }
 
@@ -328,9 +351,20 @@ enum BrandKitIO {
         try? model.context.save()
         model.brandKitSelection = k.uuid
         if let png = b.logoPNG {
-            let tmp = FileManager.default.temporaryDirectory.appending(path: "\(b.name)-logo.png")
+            let safeName = b.name.replacingOccurrences(of: "[^A-Za-z0-9_-]", with: "-", options: .regularExpression)
+            let tmp = FileManager.default.temporaryDirectory.appending(path: "\(safeName.isEmpty ? "brand" : safeName)-\(UUID().uuidString.prefix(6))-logo.png")
             try? png.write(to: tmp)
-            Task { if let a = await model.importMedia([tmp]).first { a.collection = "Brand"; k.logoPath = a.storedPath; try? model.context.save() } }
+            Task {
+                defer { try? FileManager.default.removeItem(at: tmp) }
+                if let a = await model.importMedia([tmp]).first {
+                    a.collection = "Brand"
+                    k.logoPath = a.storedPath
+                } else if let hash = try? ContentHash.sha256(of: tmp),
+                          let existing = ((try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == ws && $0.sha256 == hash }))) ?? []).first {
+                    k.logoPath = existing.storedPath
+                }
+                try? model.context.save()
+            }
         }
         return k
     }

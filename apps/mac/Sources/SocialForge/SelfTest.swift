@@ -42,6 +42,7 @@ enum SelfTest {
 
         // S-010 import a folder of 30 images and a CSV
         let src = URL(fileURLWithPath: NSTemporaryDirectory()).appending(path: "sf-selftest-\(UUID().uuidString)", directoryHint: .isDirectory)
+        defer { try? FileManager.default.removeItem(at: src) }
         try? FileManager.default.createDirectory(at: src, withIntermediateDirectories: true)
         var csv = "filename,title,url\n"
         for i in 1...30 {
@@ -415,6 +416,51 @@ enum SelfTest {
         check("the agent's results are in the store", afterAgent.allSatisfy { $0.status == .published }, afterAgent.map(\.statusRaw).joined(separator: ","))
         let c2 = await pins()
         check("10 Pins in total, no duplicates", c2 == 10, "\(c2) pins")
+
+        // Scenario D & E: Approval invalidation on edit + Unknown outcome manual reconciliation
+        let reconPost = Publication(workspaceID: ws.uuid, scheduledAt: .now.addingTimeInterval(3600), timeZoneID: "America/New_York")
+        reconPost.assetID = assets[0].uuid; reconPost.accountID = mock.serverID; reconPost.accountName = mock.name
+        reconPost.boardID = "board_winter"; reconPost.title = "Approved Pin"; reconPost.status = .approved
+        ctx.insert(reconPost)
+        reconPost.title = "Edited After Approval"
+        reconPost.invalidateApprovalIfChanged()
+        check("editing an approved post invalidates approval back to Needs Review", reconPost.status == .needsReview)
+        reconPost.status = .outcomeUnknown
+        reconPost.lastError = "Network dropped after request sent."
+        model.markOutcomeConfirmedPublished(reconPost, url: "https://pinterest.com/pin/manual-confirmed")
+        check("manual reconciliation confirms unknown outcome as published", reconPost.status == .published && reconPost.publishedURL == "https://pinterest.com/pin/manual-confirmed")
+
+        // Scenario H: Crash-recovery idempotency for Inbound MCP create_posts (no duplicates)
+        let idemReqID = UUID()
+        let idemReq = AgentRequest(id: idemReqID, tool: "create_posts", args: [
+            "brand": .string(ws.uuid.uuidString),
+            "posts": .array([
+                .object(["account_id": .string(mock.serverID), "media_id": .string(assets[0].uuid.uuidString),
+                         "scheduled_at": .string(AgentTools.iso(.now.addingTimeInterval(86_400))), "title": .string("Idem Pin")])
+            ]),
+        ], client: "Claude Code")
+        let r1 = await model.applyAgentRequest(idemReq)
+        let r2 = await model.applyAgentRequest(idemReq)
+        let idemCount = model.workspacePublications.count { $0.agentRequestID == idemReqID.uuidString }
+        check("MCP crash-recovery replay creates zero duplicate posts", r1.ok && r2.ok && idemCount == 1, "count=\(idemCount)")
+
+        // Scenario I: Multi-brand workspace isolation (5 brands) + Automation managed-folder guard
+        let overlapErr = AutomationEngine.folderOverlapProblem(model.storage.root.path, workspaceID: ws.uuid, model: model)
+        check("automation blocks watching SocialForge managed library folder", overlapErr != nil)
+        let originalWS = ws.uuid
+        var brandIDs: [UUID] = []
+        for idx in 1...5 {
+            let b = model.createWorkspace(name: "Brand \(idx)", colorHex: 0xFF8A5C)
+            brandIDs.append(b.uuid)
+        }
+        check("5 isolated brand workspaces have zero leaked posts from first workspace",
+              model.workspacePublications.isEmpty && model.accounts.isEmpty)
+        model.workspaceID = originalWS
+        check("switching back restores original workspace posts cleanly", !model.workspacePublications.isEmpty)
+        for bid in brandIDs {
+            if let w = model.workspaces.first(where: { $0.uuid == bid }) { ctx.delete(w) }
+        }
+        try? ctx.save()
 
         // Optional: the real publishing service.
         let env = ProcessInfo.processInfo.environment

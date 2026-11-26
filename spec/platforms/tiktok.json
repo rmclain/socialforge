@@ -1,8 +1,8 @@
 {
   "platform": "tiktok",
   "name": "TikTok",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -18,16 +18,16 @@
   ],
   "contentTypes": [
     {
-      "id": "video",
-      "name": "Video",
+      "id": "inbox_video",
+      "name": "Creator Inbox Video Draft",
       "requiredScopes": [
-        "video.publish"
+        "video.upload"
       ],
       "needsDestination": "none"
     },
     {
-      "id": "photo",
-      "name": "Photo post",
+      "id": "video",
+      "name": "Direct Video Post (audited app)",
       "requiredScopes": [
         "video.publish"
       ],
@@ -38,7 +38,7 @@
     "caption": {
       "max": 2200,
       "required": false,
-      "enforced": false
+      "enforced": true
     }
   },
   "image": {

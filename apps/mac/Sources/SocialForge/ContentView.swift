@@ -57,20 +57,6 @@ struct ContentView: View {
             guard !Store.isOverridden else { return }
             model.runner.startInApp()
             AppUpdater.shared.checkIfDue()
-            Task { @MainActor in
-                // What Claude, Codex, and other agents queued through `SocialForge --mcp`.
-                while !Task.isCancelled {
-                    await model.processAgentInbox()
-                    try? await Task.sleep(for: .seconds(3))
-                }
-            }
-            Task { @MainActor in
-                // Folder and weekly automations, while the app is open.
-                while !Task.isCancelled {
-                    try? await Task.sleep(for: .seconds(300))
-                    await AutomationEngine.tick(model: model)
-                }
-            }
             await model.refreshLocalAccounts()
             await model.checkComfy()
             guard model.publishMode == .service else { return }
@@ -78,6 +64,23 @@ struct ContentView: View {
             if case .up = model.backendStatus {
                 await model.refreshAccounts()
                 await model.sync()
+            }
+        }
+        .task {
+            guard !Store.isOverridden else { return }
+            // What Claude, Codex, and other agents queued through `SocialForge --mcp`.
+            while !Task.isCancelled {
+                await model.processAgentInbox()
+                try? await Task.sleep(for: .seconds(3))
+            }
+        }
+        .task {
+            guard !Store.isOverridden else { return }
+            // Folder, tag, and weekly automations while the app is open.
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(300))
+                guard !Task.isCancelled else { break }
+                await AutomationEngine.tick(model: model)
             }
         }
     }
@@ -103,6 +106,14 @@ struct TopBar: View {
             VStack(alignment: .leading, spacing: 1) {
                 Text(model.page.title).font(.system(size: 15, weight: .semibold)).foregroundStyle(DS.text)
                 Text(model.pageSubtitle).font(DS.small).foregroundStyle(DS.text2).lineLimit(1)
+            }
+            if let statusText = activeStatusText {
+                HStack(spacing: Space.xs) {
+                    ProgressView().controlSize(.small)
+                    Text(statusText).font(DS.small).foregroundStyle(DS.textBody).lineLimit(1)
+                }
+                .padding(.horizontal, Space.md).frame(height: 28)
+                .background(DS.accentSoft, in: Capsule())
             }
             Spacer(minLength: Space.lg)
             HStack(spacing: Space.sm) {
@@ -149,26 +160,40 @@ struct TopBar: View {
             Button("") { searchFocused = true }.keyboardShortcut("k").opacity(0).accessibilityHidden(true)
         }
     }
+
+    private var activeStatusText: String? {
+        if let p = model.importProgress { return "Importing \(p.done)/\(p.total)…" }
+        if let p = model.variantProgress { return "Variants \(p.done)/\(p.total)…" }
+        if let msg = model.busyMessage, !msg.isEmpty { return msg }
+        return nil
+    }
 }
 
 struct SearchResults: View {
     let query: String
     let done: () -> Void
     @Environment(AppModel.self) private var model
-    @Query(sort: \Publication.scheduledAt) private var pubs: [Publication]
-    @Query(sort: \MediaAsset.filename) private var assets: [MediaAsset]
 
     var body: some View {
         let q = query.lowercased()
-        let posts = pubs.filter { $0.workspaceID == model.workspaceID && ($0.title.lowercased().contains(q) || $0.link.lowercased().contains(q)) }.prefix(6)
-        let media = assets.filter { $0.workspaceID == model.workspaceID && ($0.filename.lowercased().contains(q) || $0.title.lowercased().contains(q) || $0.tags.contains { $0.lowercased().contains(q) }) }.prefix(6)
+        let wsID = model.workspaceID
+        let pubs: [Publication] = {
+            guard let wsID else { return [] }
+            let all = (try? model.context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == wsID }, sortBy: [SortDescriptor(\.scheduledAt)]))) ?? []
+            return Array(all.filter { $0.title.lowercased().contains(q) || $0.desc.lowercased().contains(q) || $0.link.lowercased().contains(q) }.prefix(6))
+        }()
+        let media: [MediaAsset] = {
+            guard let wsID else { return [] }
+            let all = (try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == wsID }, sortBy: [SortDescriptor(\.filename)]))) ?? []
+            return Array(all.filter { $0.filename.lowercased().contains(q) || $0.title.lowercased().contains(q) || $0.tags.contains { $0.lowercased().contains(q) } }.prefix(6))
+        }()
         VStack(alignment: .leading, spacing: Space.sm) {
-            if posts.isEmpty && media.isEmpty {
+            if pubs.isEmpty && media.isEmpty {
                 Text("Nothing matches “\(query)”.").foregroundStyle(DS.text2).padding(Space.md)
             }
-            if !posts.isEmpty {
+            if !pubs.isEmpty {
                 SectionLabel("Posts")
-                ForEach(posts) { p in
+                ForEach(pubs) { p in
                     Button {
                         model.page = .calendar
                         model.publicationSelection = [p.id]
@@ -205,29 +230,60 @@ struct NotificationsPopover: View {
 
     var body: some View {
         let mine = pubs.filter { $0.workspaceID == model.workspaceID }
-        let failed = mine.filter { $0.status == .failed }
+        let attention = mine.filter { [.failed, .authRequired, .actionRequired, .outcomeUnknown].contains($0.status) }
         let review = mine.filter { $0.status == .needsReview }
+        let badAccounts = model.accounts.filter { [.reauthRequired, .revoked, .missingPermissions, .configurationError].contains($0.connectionStatus) }
         VStack(alignment: .leading, spacing: Space.md) {
-            if failed.isEmpty && review.isEmpty {
+            if attention.isEmpty && review.isEmpty && badAccounts.isEmpty {
                 Text("You're all caught up.").foregroundStyle(DS.text2)
             }
-            if !failed.isEmpty {
-                SectionLabel("Failed")
-                ForEach(failed.prefix(5)) { p in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text(p.title).font(DS.bodyMedium)
-                        Text(p.lastError ?? "").font(DS.small).foregroundStyle(DS.red).lineLimit(2)
+            if !badAccounts.isEmpty {
+                SectionLabel("Connections needing attention")
+                ForEach(badAccounts.prefix(4)) { a in
+                    Button {
+                        model.page = .accounts
+                    } label: {
+                        HStack(spacing: Space.sm) {
+                            PlatformBadge(platform: a.platform, size: 16)
+                            Text(a.name).font(DS.bodyMedium)
+                            Spacer()
+                            Text(a.connectionStatus.label).font(DS.caption).foregroundStyle(a.connectionStatus.color)
+                        }
                     }
+                    .buttonStyle(.plain)
+                }
+            }
+            if !attention.isEmpty {
+                SectionLabel("Needs attention")
+                ForEach(attention.prefix(6)) { p in
+                    Button {
+                        model.page = .calendar
+                        model.publicationSelection = [p.id]
+                    } label: {
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: Space.xs) {
+                                PlatformBadge(platform: p.platform, size: 14)
+                                Text(p.title.isEmpty ? "Untitled post" : p.title).font(DS.bodyMedium).lineLimit(1)
+                                Spacer()
+                                StatusChip(status: p.status)
+                            }
+                            if let err = p.lastError, !err.isEmpty {
+                                Text(err).font(DS.small).foregroundStyle(p.status == .failed ? DS.red : DS.amber).lineLimit(2)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .buttonStyle(.plain)
                 }
             }
             if !review.isEmpty {
                 SectionLabel("Awaiting approval")
-                Text("\(review.count) posts need your review.").font(DS.body)
-                Button("Review in Bulk Publisher") { model.page = .bulk }.buttonStyle(LinkButtonStyle())
+                Text("\(review.count) post\(review.count == 1 ? "" : "s") need your review.").font(DS.body)
+                Button("Review in Calendar & Queue") { model.page = .calendar }.buttonStyle(LinkButtonStyle())
             }
         }
         .padding(Space.lg)
-        .frame(width: 320, alignment: .leading)
+        .frame(width: 340, alignment: .leading)
     }
 }
 
@@ -338,7 +394,7 @@ struct WorkspaceSwitcher: View {
             Button("New Workspace…") { model.showNewWorkspace = true }
         } label: {
             HStack(spacing: Space.sm) {
-                WorkspaceBadge(name: model.workspace?.name ?? "?", colorHex: model.workspace?.colorHex ?? 0xFF8A5C, size: 32)
+                WorkspaceBadge(name: model.workspace?.name ?? "?", colorHex: Int(model.workspace?.safeColorHex ?? 0xFF8A5C), size: 32)
                 VStack(alignment: .leading, spacing: 0) {
                     Text(model.workspace?.name ?? "No workspace").font(.system(size: 13.5, weight: .semibold)).foregroundStyle(DS.text).lineLimit(1)
                     Text("Brand workspace").font(DS.small).foregroundStyle(DS.text2)
@@ -364,8 +420,9 @@ struct WorkspaceBadge: View {
     var size: CGFloat = 24
 
     var body: some View {
+        let safeHex = UInt32(bitPattern: Int32(truncatingIfNeeded: colorHex)) & 0xFFFFFF
         RoundedRectangle(cornerRadius: size * 0.28, style: .continuous)
-            .fill(LinearGradient(colors: [Color(hex: UInt32(colorHex)).opacity(0.9), Color(hex: UInt32(colorHex)).opacity(0.55)],
+            .fill(LinearGradient(colors: [Color(hex: safeHex).opacity(0.9), Color(hex: safeHex).opacity(0.55)],
                                  startPoint: .topLeading, endPoint: .bottomTrailing))
             .frame(width: size, height: size)
             .overlay(Text(name.first.map { String($0).uppercased() } ?? "?").font(DS.display(size * 0.62)).foregroundStyle(.white))
@@ -575,12 +632,23 @@ struct StatusChip: View {
 extension PublicationStatus {
     var color: Color {
         switch self {
-        case .published: DS.green
-        case .failed: DS.red
-        case .needsReview: DS.amber
-        case .approved: DS.green
-        case .scheduled, .preparing, .publishing: DS.accent
+        case .published, .approved: DS.green
+        case .failed, .authRequired: DS.red
+        case .needsReview, .actionRequired, .outcomeUnknown, .retryScheduled, .manualRequired: DS.amber
+        case .scheduled, .preparing, .uploading, .awaitingProcessing, .publishing, .verifying: DS.accent
         case .draft, .paused, .canceled: DS.text2
+        }
+    }
+}
+
+extension ConnectionStatus {
+    var color: Color {
+        switch self {
+        case .connected: DS.green
+        case .connectedWithLimitations, .expiringSoon, .rateLimited, .missingPermissions, .configuredUntested: DS.amber
+        case .reauthRequired, .revoked, .configurationError, .unreachable: DS.red
+        case .connecting: DS.accent
+        case .notConfigured, .disabled: DS.text3
         }
     }
 }

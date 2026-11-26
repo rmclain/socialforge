@@ -1,8 +1,8 @@
 {
   "platform": "x",
   "name": "X",
-  "specVersion": "2026-11-19",
-  "status": "planned",
+  "specVersion": "2026-11-26",
+  "status": "available",
   "liveVerified": false,
   "sources": [
     {
@@ -29,6 +29,16 @@
     {
       "id": "image_post",
       "name": "Post with image",
+      "requiredScopes": [
+        "tweet.write",
+        "users.read",
+        "media.write"
+      ],
+      "needsDestination": "none"
+    },
+    {
+      "id": "video_post",
+      "name": "Post with video",
       "requiredScopes": [
         "tweet.write",
         "users.read",

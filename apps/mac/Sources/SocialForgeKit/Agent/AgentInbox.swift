@@ -39,6 +39,16 @@ public struct AgentInbox: Sendable {
 
     var pendingDir: URL { root.appending(path: "Pending", directoryHint: .isDirectory) }
     var doneDir: URL { root.appending(path: "Done", directoryHint: .isDirectory) }
+    public var quarantineDir: URL { root.appending(path: "Quarantine", directoryHint: .isDirectory) }
+
+    private static func ensurePrivateDir(_ dir: URL) throws {
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
+        try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: dir.path)
+    }
+
+    private static func restrictFile(_ url: URL) {
+        try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
+    }
 
     static let encoder: JSONEncoder = {
         let e = JSONEncoder()
@@ -64,25 +74,55 @@ public struct AgentInbox: Sendable {
 
     /// Writes the request in one step (temp file, then rename), so the app never reads half a file.
     public func enqueue(_ request: AgentRequest) throws {
-        try FileManager.default.createDirectory(at: pendingDir, withIntermediateDirectories: true)
+        try Self.ensurePrivateDir(root)
+        try Self.ensurePrivateDir(pendingDir)
         let data = try Self.encoder.encode(request)
         let tmp = pendingDir.appending(path: ".\(request.id.uuidString).tmp")
         try data.write(to: tmp)
-        try FileManager.default.moveItem(at: tmp, to: pendingDir.appending(path: "\(request.id.uuidString).json"))
+        Self.restrictFile(tmp)
+        let finalURL = pendingDir.appending(path: "\(request.id.uuidString).json")
+        try FileManager.default.moveItem(at: tmp, to: finalURL)
+        Self.restrictFile(finalURL)
     }
 
-    /// Waiting requests, oldest first. A file that does not read as a request is dropped.
+    /// Waiting requests, oldest first. Unreadable files are quarantined (never silently dropped);
+    /// requests already in Done/ (e.g. crash between write and remove) are skipped and cleaned up.
     public func pending() -> [AgentRequest] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: nil)) ?? []
+        let files = (try? FileManager.default.contentsOfDirectory(at: pendingDir, includingPropertiesForKeys: [.contentModificationDateKey])) ?? []
         var out: [AgentRequest] = []
-        for f in files where f.pathExtension == "json" {
+        let now = Date()
+        for f in files {
+            if f.pathExtension == "tmp" {
+                if let mtime = (try? f.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate,
+                   now.timeIntervalSince(mtime) > 300 {
+                    try? FileManager.default.removeItem(at: f)
+                }
+                continue
+            }
+            guard f.pathExtension == "json" else { continue }
             if let data = try? Data(contentsOf: f), let r = try? Self.decoder.decode(AgentRequest.self, from: data) {
+                // Idempotency guard: if Done/<id>.json already exists, clean up the duplicate Pending file.
+                if result(r.id) != nil {
+                    try? FileManager.default.removeItem(at: f)
+                    continue
+                }
                 out.append(r)
             } else {
-                try? FileManager.default.removeItem(at: f)
+                quarantine(f)
             }
         }
         return out.sorted { $0.createdAt < $1.createdAt }
+    }
+
+    private func quarantine(_ file: URL) {
+        try? Self.ensurePrivateDir(quarantineDir)
+        let stamp = Int(Date().timeIntervalSince1970)
+        let dest = quarantineDir.appending(path: "\(stamp)-\(file.lastPathComponent)")
+        if (try? FileManager.default.moveItem(at: file, to: dest)) == nil {
+            try? FileManager.default.removeItem(at: file)
+        } else {
+            Self.restrictFile(dest)
+        }
     }
 
     public var pendingCount: Int {
@@ -91,8 +131,11 @@ public struct AgentInbox: Sendable {
 
     /// Records the result and takes the request out of Pending.
     public func finish(_ result: AgentResult) throws {
-        try FileManager.default.createDirectory(at: doneDir, withIntermediateDirectories: true)
-        try Self.encoder.encode(result).write(to: doneDir.appending(path: "\(result.id.uuidString).json"), options: .atomic)
+        try Self.ensurePrivateDir(root)
+        try Self.ensurePrivateDir(doneDir)
+        let dest = doneDir.appending(path: "\(result.id.uuidString).json")
+        try Self.encoder.encode(result).write(to: dest, options: .atomic)
+        Self.restrictFile(dest)
         try? FileManager.default.removeItem(at: pendingDir.appending(path: "\(result.id.uuidString).json"))
     }
 
@@ -107,7 +150,8 @@ public struct AgentInbox: Sendable {
 
     /// The latest results, newest first.
     public func recent(limit: Int = 10) -> [AgentResult] {
-        let files = (try? FileManager.default.contentsOfDirectory(at: doneDir, includingPropertiesForKeys: nil)) ?? []
+        let files = ((try? FileManager.default.contentsOfDirectory(at: doneDir, includingPropertiesForKeys: nil)) ?? [])
+            .filter { $0.pathExtension == "json" }
         return files.compactMap { f in (try? Data(contentsOf: f)).flatMap { try? Self.decoder.decode(AgentResult.self, from: $0) } }
             .sorted { $0.finishedAt > $1.finishedAt }
             .prefix(limit).map { $0 }

@@ -32,12 +32,23 @@ final class AppModel {
         didSet { if !Store.isOverridden { UserDefaults.standard.set(settingsTab.rawValue, forKey: "settings.tab") } }
     }
 
-    /// The workspace everything is filtered to.
+    /// The workspace everything is filtered to. Switching clears all workspace-scoped selections and drafts
+    /// so assets, accounts, campaigns, and edits never leak between brands.
     var workspaceID: UUID? {
         didSet {
+            guard workspaceID != oldValue else { return }
             if !Store.isOverridden { UserDefaults.standard.set(workspaceID?.uuidString, forKey: "workspace.current") }
             mediaSelection = []
+            mediaPendingDelete = []
             publicationSelection = []
+            brandKitSelection = nil
+            campaignSelection = nil
+            automationSelection = nil
+            mediaCollection = nil
+            bulk.resetForWorkspaceSwitch()
+            composer.resetForWorkspaceSwitch()
+            studio.close()
+            aiStudio.resetForWorkspaceSwitch()
         }
     }
     var mediaSelection: Set<UUID> = []
@@ -48,26 +59,28 @@ final class AppModel {
     var campaignSelection: UUID?
     var automationSelection: UUID?
     var showNewWorkspace = false
-    /// First launch: the Welcome sheet that sets up the first brand, then opens Accounts.
+    /// First launch: the Welcome sheet that sets up the first brand, then opens Connections.
     var showWelcome = false
     /// The collection the Media Library shows; nil for all media. Other pages set it to point there.
     var mediaCollection: String?
 
-    // Long-running work, shown in the toolbar.
+    // Long-running work, shown in the toolbar / top status bar.
     var importProgress: (done: Int, total: Int)?
     var lastImportSummary: String?
     var variantProgress: (done: Int, total: Int)?
     var busyMessage: String?
     var lastError: String?
-    /// A Meta or Threads sign-in waiting for the address the browser landed on.
+    /// A manual-callback OAuth sign-in waiting for the address the browser landed on.
     var pendingOAuth: PendingOAuth?
     var metaMessage: String?
+    var publicMediaVerification: PublicMediaVerification?
 
     // Publishing service.
     var backendURLString: String {
-        didSet { UserDefaults.standard.set(backendURLString, forKey: "backend.url") }
+        didSet { if !Store.isOverridden { UserDefaults.standard.set(backendURLString, forKey: "backend.url") } }
     }
     var backendStatus: BackendStatus = .unknown
+    var backendCapabilities: API.Capabilities?
     var boards: [String: [API.Board]] = [:]
     var lastSync: Date?
 
@@ -81,13 +94,15 @@ final class AppModel {
     let studio = StudioModel()
     let composer = ComposerModel()
     let aiStudio = AIStudioModel()
-    /// Bumped when the publish mode or helper changes, so views re-read them.
+    /// Bumped when the publish mode, credentials, or helper changes, so views re-read them.
     var modeRevision = 0
     /// Saved in UserDefaults, except in test and snapshot runs.
     var publishModeRaw: String = Store.isOverridden ? "mac" : (UserDefaults.standard.string(forKey: "publish.mode") ?? "mac") {
         didSet { if !Store.isOverridden { UserDefaults.standard.set(publishModeRaw, forKey: "publish.mode") } }
     }
     @ObservationIgnored lazy var runner = PublishRunner(container: container, storage: libraryStorage)
+
+    private var importGeneration = 0
 
     init(container: ModelContainer) {
         self.container = container
@@ -96,6 +111,9 @@ final class AppModel {
             workspaceID = UUID(uuidString: saved)
         }
         ensureWorkspace()
+        if let notice = Store.recoveryNotice {
+            lastError = notice
+        }
         // Tests and snapshots use a /tmp store and never see it, unless APP_WELCOME=1 asks for it.
         if !Store.isOverridden || ProcessInfo.processInfo.environment["APP_WELCOME"] == "1" {
             showWelcome = needsBrandSetup
@@ -117,25 +135,31 @@ final class AppModel {
         return kits == 0 && assets == 0 && posts == 0
     }
 
-    /// The Welcome sheet's Create: names the workspace and makes its brand kit, then opens Accounts.
+    /// The Welcome sheet's Create: names the workspace and makes its brand kit, then opens Connections.
     @discardableResult
-    func completeBrandSetup(name: String, colorHex: Int, voice: String, hashtags: [String], logo: URL?, folder: URL? = nil) async -> BrandKit? {
+    func completeBrandSetup(name: String, colorHex: Int, voice: String, hashtags: [String], logo: URL?, folder: URL? = nil,
+                            addDemoAccount: Bool = false) async -> BrandKit? {
         guard let ws = workspace else { return nil }
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         if !clean.isEmpty { ws.name = clean }
         ws.colorHex = colorHex
         let kit = brandKit ?? {
             let k = BrandKit(workspaceID: ws.uuid, name: ws.name)
+            k.isPrimary = true
             context.insert(k)
             return k
         }()
         kit.name = ws.name
+        kit.isPrimary = true
         kit.colors = [0x2A211C, 0xF4EFE8, colorHex, 0x7A5C48, 0xC9B8A6]
         kit.headlineFont = FontRegistry.hasInstrumentSerif ? "Instrument Serif" : "Baskerville"
         kit.voice = voice.trimmingCharacters(in: .whitespacesAndNewlines)
         kit.hashtags = hashtags.map { $0.trimmingCharacters(in: CharacterSet(charactersIn: "# ")) }.filter { !$0.isEmpty }
         // The folder first, so the logo is saved there too.
-        if let folder { setBrandFolder(folder, for: kit) }
+        if let folder, !setBrandFolder(folder, for: kit) {
+            // lastError is already populated by setBrandFolder; continue setup using default library so user isn't blocked.
+            log("Could not use folder \(folder.path); using default library", symbol: "exclamationmark.triangle", category: "system")
+        }
         if let logo {
             let selection = mediaSelection
             let added = await importMedia([logo])
@@ -143,10 +167,15 @@ final class AppModel {
             if let a = added.first {
                 a.collection = "Brand"
                 kit.logoPath = a.storedPath
+            } else {
+                lastError = "Could not import logo file \(logo.lastPathComponent)."
             }
         }
-        try? context.save()
-        log("Set up the brand \(ws.name)", symbol: "paintpalette")
+        if addDemoAccount {
+            addMockAccount()
+        }
+        saveContext("completeBrandSetup")
+        log("Set up the brand \(ws.name)", symbol: "paintpalette", category: "general")
         finishBrandSetup()
         return kit
     }
@@ -158,13 +187,13 @@ final class AppModel {
             if !clean.isEmpty { ws.name = clean }
             if kit.colors.count > 2 { ws.colorHex = kit.colors[2] }
         }
-        try? context.save()
-        log("Imported the brand \(kit.name)", symbol: "paintpalette")
+        kit.isPrimary = true
+        saveContext("completeBrandImport")
+        log("Imported the brand \(kit.name)", symbol: "paintpalette", category: "general")
         finishBrandSetup()
     }
 
-    /// Create, Import, or Skip: the sheet does not come back, and Accounts opens,
-    /// the next step: connecting where posts go.
+    /// Create, Import, or Skip: the sheet does not come back, and Connections opens.
     func finishBrandSetup() {
         if !Store.isOverridden { UserDefaults.standard.set(true, forKey: Self.brandSetupDoneKey) }
         showWelcome = false
@@ -185,7 +214,7 @@ final class AppModel {
         if all.isEmpty {
             let w = Workspace(name: "My Brand")
             context.insert(w)
-            try? context.save()
+            saveContext("ensureWorkspace")
             workspaceID = w.uuid
         } else if workspace == nil {
             workspaceID = all[0].uuid
@@ -197,28 +226,37 @@ final class AppModel {
         let clean = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let w = Workspace(name: clean.isEmpty ? "New Workspace" : clean, colorHex: colorHex)
         context.insert(w)
-        try? context.save()
+        saveContext("createWorkspace")
         workspaceID = w.uuid
-        log("Created workspace \(w.name)", symbol: "plus.circle")
+        log("Created workspace \(w.name)", symbol: "plus.circle", category: "general")
         return w
     }
 
-    func log(_ text: String, symbol: String) {
-        guard let workspaceID else { return }
-        context.insert(ActivityEntry(workspaceID: workspaceID, text: text, symbol: symbol))
-        try? context.save()
+    func log(_ text: String, symbol: String, category: String = "general", workspace: UUID? = nil) {
+        guard let ws = workspace ?? workspaceID else { return }
+        context.insert(ActivityEntry(workspaceID: ws, text: DiagnosticRedactor.sanitize(text), symbol: symbol, category: category))
+        saveContext("log")
+    }
+
+    func saveContext(_ label: String = "save") {
+        do {
+            try context.save()
+        } catch {
+            lastError = "Could not save changes (\(label)): \(error.localizedDescription)"
+            fputs("SwiftData save failed (\(label)): \(error)\n", stderr)
+        }
     }
 
     // MARK: - Storage
 
-    /// Where new media for the current brand goes: the brand kit's folder when it has
+    /// Where new media for the current brand goes: the active brand kit's folder when it has
     /// one (Brand Kits > Save files to), else the library next to the store.
-    /// Files already in the library stay where they are.
     var storage: ManagedStorage { workspaceID.map(storage(forWorkspace:)) ?? libraryStorage }
 
-    /// The same, for any brand (agent requests can name a brand that is not the one open).
+    /// The same, for any brand (agent requests and automations can name a brand that is not the one open).
     func storage(forWorkspace id: UUID) -> ManagedStorage {
-        let kit = (try? context.fetch(FetchDescriptor<BrandKit>(predicate: #Predicate { $0.workspaceID == id })))?.first
+        let kits = (try? context.fetch(FetchDescriptor<BrandKit>(predicate: #Predicate { $0.workspaceID == id }, sortBy: [SortDescriptor(\.name)]))) ?? []
+        let kit = kits.first(where: \.isPrimary) ?? kits.first
         if let path = kit?.folderPath, !path.isEmpty {
             return ManagedStorage(root: URL(fileURLWithPath: path, isDirectory: true))
         }
@@ -229,49 +267,75 @@ final class AppModel {
     var libraryStorage: ManagedStorage { Self.storage(for: Store.url) }
 
     func aiJobOutputs(_ jobID: UUID) -> [UUID] {
-        ((try? context.fetch(FetchDescriptor<AIJob>()))?.first { $0.uuid == jobID })?.outputAssetIDs ?? []
+        guard let ws = workspaceID else { return [] }
+        return ((try? context.fetch(FetchDescriptor<AIJob>(predicate: #Predicate { $0.uuid == jobID && $0.workspaceID == ws })))?.first)?.outputAssetIDs ?? []
     }
 
-    /// Deletes generated or imported media: the library records, their variants, and,
-    /// with `trashFiles`, the library's copy of each file (moved to the Trash, never
-    /// the original the person imported from). AI jobs forget the deleted outputs.
+    /// Deletes generated or imported media: the library records, their variant files and rows, and,
+    /// with `trashFiles`, the library's copy of each file (moved to the Trash, never the user's original).
     func deleteMedia(_ targets: [MediaAsset], trashFiles: Bool) {
+        guard !targets.isEmpty else { return }
         let ids = Set(targets.map(\.uuid))
-        // Two records can share one stored copy (the same file imported twice): keep it while another still uses it.
+        let targetWS = targets.first?.workspaceID ?? workspaceID
         let kept = Set(((try? context.fetch(FetchDescriptor<MediaAsset>())) ?? []).filter { !ids.contains($0.uuid) }.map(\.storedPath))
         for t in targets {
             if trashFiles, t.storedPath.contains("/Originals/"), t.storedPath != t.sourcePath, !kept.contains(t.storedPath) {
                 let file = t.storedURL
                 try? FileManager.default.trashItem(at: file, resultingItemURL: nil)
-                // Its content-hash folder, once empty.
                 let dir = file.deletingLastPathComponent()
-                if (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.isEmpty == true { try? FileManager.default.removeItem(at: dir) }
+                if (try? FileManager.default.contentsOfDirectory(atPath: dir.path))?.isEmpty == true {
+                    try? FileManager.default.removeItem(at: dir)
+                }
             }
-            for v in variants(of: t.uuid) { context.delete(v) }
+            // Delete both variant records AND their derived files on disk.
+            let assetVariants = variants(of: t.uuid)
+            for v in assetVariants {
+                if trashFiles {
+                    try? FileManager.default.removeItem(at: v.url)
+                    let vDir = v.url.deletingLastPathComponent()
+                    if (try? FileManager.default.contentsOfDirectory(atPath: vDir.path))?.isEmpty == true {
+                        try? FileManager.default.removeItem(at: vDir)
+                    }
+                }
+                context.delete(v)
+            }
             context.delete(t)
         }
         for job in (try? context.fetch(FetchDescriptor<AIJob>())) ?? [] where job.outputAssetIDs.contains(where: ids.contains) {
             job.outputAssetIDs.removeAll { ids.contains($0) }
         }
         mediaSelection.subtract(ids)
-        try? context.save()
-        log(targets.count == 1 ? "Deleted \(targets[0].filename)" : "Deleted \(targets.count) files", symbol: "trash")
+        saveContext("deleteMedia")
+        log(targets.count == 1 ? "Deleted \(targets[0].filename)" : "Deleted \(targets.count) files", symbol: "trash", category: "media", workspace: targetWS)
     }
 
-    /// Where media is still used, so Delete can warn first: posts not yet sent and Studio designs or templates that show the file.
+    /// Where media is still used, so Delete can warn first: unpublished posts, Studio designs/templates, and BrandKit logos.
     func mediaUsage(_ targets: [MediaAsset]) -> (posts: Int, designs: Int) {
+        guard !targets.isEmpty else { return (0, 0) }
         let ids = Set(targets.map(\.uuid))
-        let open: Set<PublicationStatus> = [.draft, .needsReview, .approved, .scheduled, .preparing, .publishing, .failed, .paused]
+        let workspacesInvolved = Set(targets.map(\.workspaceID))
+        let open: Set<PublicationStatus> = [
+            .draft, .needsReview, .approved, .scheduled, .preparing, .uploading,
+            .awaitingProcessing, .publishing, .verifying, .retryScheduled, .authRequired,
+            .actionRequired, .outcomeUnknown, .failed, .paused, .manualRequired,
+        ]
         let posts = ((try? context.fetch(FetchDescriptor<Publication>())) ?? [])
-            .filter { $0.assetID.map(ids.contains) == true && open.contains($0.status) }.count
-        // Designs keep image paths in their JSON, where "/" may be written as "\/".
+            .filter { p in
+                guard workspacesInvolved.contains(p.workspaceID), open.contains(p.status) else { return false }
+                return p.assetID.map(ids.contains) == true || p.extraAssetIDs.contains(where: ids.contains)
+            }.count
+        let paths = Set(targets.map(\.storedPath))
         let needles = targets.flatMap { [$0.storedPath, $0.storedPath.replacingOccurrences(of: "/", with: "\\/")] }
         func uses(_ json: Data) -> Bool {
             guard let text = String(data: json, encoding: .utf8) else { return false }
             return needles.contains { text.contains($0) }
         }
-        let designs = ((try? context.fetch(FetchDescriptor<Design>())) ?? []).filter { uses($0.json) }.count
-            + ((try? context.fetch(FetchDescriptor<CreativeTemplate>())) ?? []).filter { uses($0.json) }.count
+        let designs = ((try? context.fetch(FetchDescriptor<Design>())) ?? [])
+            .filter { workspacesInvolved.contains($0.workspaceID) && uses($0.json) }.count
+            + ((try? context.fetch(FetchDescriptor<CreativeTemplate>())) ?? [])
+                .filter { workspacesInvolved.contains($0.workspaceID) && uses($0.json) }.count
+            + ((try? context.fetch(FetchDescriptor<BrandKit>())) ?? [])
+                .filter { workspacesInvolved.contains($0.workspaceID) && !$0.logoPath.isEmpty && paths.contains($0.logoPath) }.count
         return (posts, designs)
     }
 
@@ -285,7 +349,7 @@ final class AppModel {
     /// Sets the brand's folder and makes sure it exists; nil goes back to the app's library.
     @discardableResult
     func setBrandFolder(_ url: URL?, for kit: BrandKit) -> Bool {
-        guard let url else { kit.folderPath = ""; try? context.save(); return true }
+        guard let url else { kit.folderPath = ""; saveContext("setBrandFolder"); return true }
         do {
             try FileManager.default.createDirectory(at: url, withIntermediateDirectories: true)
         } catch {
@@ -293,8 +357,8 @@ final class AppModel {
             return false
         }
         kit.folderPath = url.standardizedFileURL.path
-        try? context.save()
-        log("\(kit.name) now saves files to \(url.path)", symbol: "folder")
+        saveContext("setBrandFolder")
+        log("\(kit.name) now saves files to \(url.path)", symbol: "folder", category: "media", workspace: kit.workspaceID)
         return true
     }
 
@@ -306,29 +370,37 @@ final class AppModel {
         return ManagedStorage(root: URL.applicationSupportDirectory.appending(path: "SocialForge/Library", directoryHint: .isDirectory))
     }
 
-    func assets(_ ids: some Sequence<UUID>) -> [MediaAsset] {
+    /// Workspace-scoped asset lookup for a set of UUIDs.
+    func assets(_ ids: some Sequence<UUID>, in workspace: UUID? = nil) -> [MediaAsset] {
         let set = Set(ids)
-        let all = (try? context.fetch(FetchDescriptor<MediaAsset>())) ?? []
+        guard !set.isEmpty else { return [] }
+        let ws = workspace ?? workspaceID
+        let all: [MediaAsset]
+        if let ws {
+            all = (try? context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == ws }))) ?? []
+        } else {
+            all = (try? context.fetch(FetchDescriptor<MediaAsset>())) ?? []
+        }
         return all.filter { set.contains($0.uuid) }
     }
 
     /// Puts media in a collection, or takes it out with an empty name.
-    ///
-    /// Studio exports are filed in a "Branded…" collection and tagged "branded",
-    /// and the Library's Branded filter goes by the tag. Taking one out of its
-    /// Branded collection drops the tag too, or it stayed on screen under Branded
-    /// and removing looked like it did nothing.
     func setCollection(_ name: String, for targets: [MediaAsset]) {
         let clean = name.trimmingCharacters(in: .whitespaces)
         for a in targets {
             if clean.isEmpty, a.collection.hasPrefix("Branded") { a.tags.removeAll { $0 == "branded" } }
             a.collection = clean
         }
-        try? context.save()
+        saveContext("setCollection")
     }
 
-    func asset(_ id: UUID?) -> MediaAsset? {
+    func asset(_ id: UUID?, in workspace: UUID? = nil) -> MediaAsset? {
         guard let id else { return nil }
+        if let ws = workspace ?? workspaceID {
+            var d = FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.uuid == id && $0.workspaceID == ws })
+            d.fetchLimit = 1
+            return try? context.fetch(d).first
+        }
         var d = FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.uuid == id })
         d.fetchLimit = 1
         return try? context.fetch(d).first
@@ -338,6 +410,12 @@ final class AppModel {
         (try? context.fetch(FetchDescriptor<MediaVariant>(predicate: #Predicate { $0.assetID == assetID }, sortBy: [SortDescriptor(\.createdAt)]))) ?? []
     }
 
+    /// Bulk-fetches variants grouped by assetID in a single SQLite query to avoid N+1 main-actor fetches.
+    func variantsByAsset() -> [UUID: [MediaVariant]] {
+        let all = (try? context.fetch(FetchDescriptor<MediaVariant>(sortBy: [SortDescriptor(\.createdAt)]))) ?? []
+        return Dictionary(grouping: all, by: \.assetID)
+    }
+
     // MARK: - Import
 
     /// Imports files and folders into the current workspace, or into `target`. Returns the new assets.
@@ -345,19 +423,31 @@ final class AppModel {
     func importMedia(_ urls: [URL], into target: UUID? = nil) async -> [MediaAsset] {
         guard let workspaceID = target ?? self.workspaceID else { return [] }
         let isCurrent = workspaceID == self.workspaceID
-        let scan = MediaScanner.scan(urls)
-        let csvs = urls.flatMap { url -> [URL] in
-            if url.pathExtension.lowercased() == "csv" { return [url] }
-            var isDir: ObjCBool = false
-            guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return [] }
-            return ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? []).filter { $0.pathExtension.lowercased() == "csv" }
-        }
+        importGeneration += 1
+        let gen = importGeneration
+
+        // Run recursive folder scanning off the main actor so large folder drops never stall UI.
+        let (scan, csvs) = await Task.detached(priority: .userInitiated) {
+            let scanned = MediaScanner.scan(urls)
+            let foundCSVs = urls.flatMap { url -> [URL] in
+                if url.pathExtension.lowercased() == "csv" { return [url] }
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else { return [] }
+                return ((try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)) ?? [])
+                    .filter { $0.pathExtension.lowercased() == "csv" }
+            }
+            return (scanned, foundCSVs)
+        }.value
+
         let wsAssets = (try? context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == workspaceID }))) ?? []
         let known = Set(wsAssets.map(\.sha256))
         importProgress = (0, scan.files.count)
-        let storage = storage(forWorkspace: workspaceID)
-        let outcome = await MediaImporter.run(scan.files, storage: storage, known: known) { done, total in
-            Task { @MainActor in self.importProgress = (done, total) }
+        let targetStorage = storage(forWorkspace: workspaceID)
+        let outcome = await MediaImporter.run(scan.files, storage: targetStorage, known: known) { done, total in
+            Task { @MainActor [weak self] in
+                guard let self, self.importGeneration == gen, self.importProgress != nil else { return }
+                self.importProgress = (done, total)
+            }
         }
         var created: [MediaAsset] = []
         for item in outcome.imported {
@@ -373,17 +463,18 @@ final class AppModel {
             context.insert(a)
             created.append(a)
         }
-        try? context.save()
-        importProgress = nil
+        saveContext("importMedia")
+        if importGeneration == gen { importProgress = nil }
         var parts = ["Imported \(outcome.imported.count)"]
         if !outcome.duplicates.isEmpty { parts.append("\(outcome.duplicates.count) duplicates skipped") }
         let failed = outcome.failed.count + scan.skipped.count
         if failed > 0 { parts.append("\(failed) not imported") }
-        lastImportSummary = parts.joined(separator: " · ")
+        var summary = parts.joined(separator: " · ")
         var reasons = (scan.skipped + outcome.failed).prefix(5).map { "\($0.url.lastPathComponent): \($0.reason)" }
         if failed > 5 { reasons.append("…and \(failed - 5) more") }
-        if !reasons.isEmpty { lastImportSummary! += "\n" + reasons.joined(separator: "\n") }
-        if !created.isEmpty { log("Imported \(created.count) \(created.count == 1 ? "file" : "files")", symbol: "photo.on.rectangle") }
+        if !reasons.isEmpty { summary += "\n" + reasons.joined(separator: "\n") }
+        lastImportSummary = summary
+        if !created.isEmpty { log("Imported \(created.count) \(created.count == 1 ? "file" : "files")", symbol: "photo.on.rectangle", category: "media", workspace: workspaceID) }
         guard isCurrent else { return created }
         mediaSelection = Set(created.map(\.uuid))
         if let csv = csvs.first { bulk.loadCSV(csv) }
@@ -395,8 +486,9 @@ final class AppModel {
     /// Makes one variant per asset off the main actor, at most four at a time.
     @discardableResult
     func makeVariants(_ assets: [MediaAsset], preset: ExportPreset) async -> [MediaVariant] {
+        let targetWS = assets.first?.workspaceID ?? workspaceID
         let jobs = assets.map { (id: $0.uuid, src: $0.storedURL, focus: CGPoint(x: 0.5, y: 0.5)) }
-        let out = storage.variants
+        let out = (targetWS.map(storage(forWorkspace:)) ?? storage).variants
         variantProgress = (0, jobs.count)
         var made: [MediaVariant] = []
         var failures: [String] = []
@@ -419,21 +511,20 @@ final class AppModel {
                 variantProgress = (done, jobs.count)
                 switch result {
                 case .success(let r):
-                    // Replace an older variant from the same preset.
                     for old in variants(of: id) where old.presetID == preset.id { context.delete(old) }
                     let v = MediaVariant(assetID: id, preset: preset, result: r)
                     context.insert(v)
                     made.append(v)
                 case .failure:
-                    failures.append(asset(id)?.filename ?? id.uuidString)
+                    failures.append(asset(id, in: targetWS)?.filename ?? id.uuidString)
                 }
                 add()
             }
         }
-        try? context.save()
+        saveContext("makeVariants")
         variantProgress = nil
         if !failures.isEmpty { lastError = "Could not make \(preset.name) for: \(failures.joined(separator: ", "))" }
-        if !made.isEmpty { log("Made \(made.count) \(preset.name) variants", symbol: "aspectratio") }
+        if !made.isEmpty { log("Made \(made.count) \(preset.name) variants", symbol: "aspectratio", category: "media", workspace: targetWS) }
         return made
     }
 
@@ -446,24 +537,58 @@ final class AppModel {
 
     var token: String {
         get { Keychain.read("backend.token") ?? "" }
-        set { Keychain.write("backend.token", newValue) }
+        set { Keychain.write("backend.token", newValue); modeRevision += 1 }
+    }
+
+    var hasBackendToken: Bool {
+        let _ = modeRevision
+        return Keychain.read("backend.token")?.isEmpty == false
     }
 
     func checkBackend() async {
-        guard let client else { backendStatus = .down("Enter an address like http://127.0.0.1:8787."); return }
+        guard let client else { backendStatus = .down("Enter an address like http://127.0.0.1:8787."); backendCapabilities = nil; return }
         backendStatus = .checking
         do {
             let h = try await client.health()
             let v = try await client.version()
+            backendCapabilities = try? await client.capabilities()
             backendStatus = h.status == "ok" ? .up(version: v.version + (v.commit.map { " (\($0.prefix(7)))" } ?? "")) : .down("Health is \(h.status)")
         } catch {
+            backendCapabilities = nil
             backendStatus = .down(error.localizedDescription)
         }
+    }
+
+    /// Whether the optional publishing service can publish `platform`.
+    func backendSupports(platform: String) -> Bool {
+        if let caps = backendCapabilities { return caps.platforms.contains(platform) }
+        // Conservative default when capabilities haven't been queried yet: service currently supports Pinterest + mock.
+        return platform == "pinterest"
     }
 
     var accounts: [SocialAccount] {
         guard let workspaceID else { return [] }
         return (try? context.fetch(FetchDescriptor<SocialAccount>(predicate: #Predicate { $0.workspaceID == workspaceID }, sortBy: [SortDescriptor(\.name)]))) ?? []
+    }
+
+    /// Safely disconnects an account from its workspace. Only removes Keychain credentials
+    /// when no other workspace still references the same `tokenKey`.
+    func disconnectAccount(_ account: SocialAccount) {
+        let key = account.tokenKey
+        let refreshKey = account.refreshTokenKey
+        let name = account.name
+        let ws = account.workspaceID
+        let id = account.persistentModelID
+        let remainingUsingSameKey = ((try? context.fetch(FetchDescriptor<SocialAccount>())) ?? [])
+            .filter { $0.persistentModelID != id && $0.tokenKey == key }
+        context.delete(account)
+        if remainingUsingSameKey.isEmpty && account.source == "mac" && !account.isMock {
+            Keychain.write(key, "")
+            Keychain.write(refreshKey, "")
+        }
+        saveContext("disconnectAccount")
+        modeRevision += 1
+        log("Disconnected \(name)", symbol: "link.badge.plus", category: "connection", workspace: ws)
     }
 
     func refreshAccounts() async {
@@ -480,11 +605,12 @@ final class AppModel {
                     return n
                 }()
                 a.name = r.name; a.handle = r.handle ?? ""; a.status = r.status; a.scopes = r.scopes
-                a.tokenExpiresAt = r.tokenExpiresAt; a.lastPublishedAt = r.lastPublishedAt; a.isMock = r.isMock; a.refreshedAt = .now
+                a.tokenExpiresAt = r.tokenExpiresAt; a.lastPublishedAt = r.lastPublishedAt; a.isMock = r.isMock
+                a.lastVerifiedAt = .now; a.refreshedAt = .now
                 if r.status == "connected", let b = try? await client.boards(account: r.id) { boards[r.id] = b }
             }
             for gone in local where gone.source == "service" && !remote.contains(where: { $0.id == gone.serverID }) { context.delete(gone) }
-            try? context.save()
+            saveContext("refreshAccounts")
         } catch {
             lastError = error.localizedDescription
         }
@@ -495,32 +621,41 @@ final class AppModel {
         do { NSWorkspace.shared.open(try await client.connect(platform: platform)) } catch { lastError = error.localizedDescription }
     }
 
-    /// Sends approved posts to the service. Each post's image (variant if any)
-    /// is uploaded by hash first. Posts the service accepted become Scheduled.
+    /// Activates approved posts under the explicit publishing owner (this Mac or the remote publishing service).
+    /// Changing the global publish preference never silently transfers already-scheduled posts.
     func activate(_ pubs: [Publication]) async -> (sent: Int, failed: [String]) {
         if publishMode == .mac {
             var n = 0
             for p in pubs where p.status == .approved {
+                p.publishOwner = .mac
                 p.status = .scheduled
                 p.nextAttemptAt = nil
                 n += 1
             }
-            try? context.save()
-            if n > 0 { log("Scheduled \(n) posts to publish from this Mac", symbol: "clock.badge.checkmark") }
+            saveContext("activateOnMac")
+            if n > 0 { log("Scheduled \(n) posts to publish from this Mac", symbol: "clock.badge.checkmark", category: "publishing") }
             runner.kick()
             return (n, [])
         }
         guard let client else { return (0, [BackendClient.ClientError.notConfigured.localizedDescription]) }
+        if backendCapabilities == nil {
+            backendCapabilities = try? await client.capabilities()
+        }
         var failed: [String] = []
         var batch: [API.NewPublication] = []
         var byClient: [String: Publication] = [:]
         busyMessage = "Uploading media…"
+        defer { busyMessage = nil }
         for p in pubs where p.status == .approved {
+            guard backendSupports(platform: p.platform) else {
+                failed.append("\(p.title.isEmpty ? p.platform : p.title): The publishing service does not support \(p.platform). Switch to This Mac or publish locally.")
+                continue
+            }
             var mediaID: String?
-            if let a = asset(p.assetID) {
+            if let a = asset(p.assetID, in: p.workspaceID) {
                 let v = variants(of: a.uuid).first { $0.uuid == p.variantID }
                 let file = v?.url ?? a.storedURL
-                let type = (v?.format ?? a.format) == "png" ? "image/png" : "image/jpeg"
+                let type = MediaFormats.mimeType(for: file)
                 do {
                     let hash = try ContentHash.sha256(of: file)
                     mediaID = try await client.upload(file: file, sha256: hash, contentType: type).mediaId
@@ -536,17 +671,17 @@ final class AppModel {
             byClient[n.clientId] = p
         }
         busyMessage = "Scheduling \(batch.count) posts…"
-        defer { busyMessage = nil }
         guard !batch.isEmpty else { return (0, failed) }
         do {
             let created = try await client.create(batch)
             for c in created {
                 guard let p = byClient[c.clientId] else { continue }
                 p.serverID = c.id
+                p.publishOwner = .service
                 p.status = PublicationStatus(server: c.status)
             }
-            try? context.save()
-            log("Scheduled \(created.count) posts with the publishing service", symbol: "clock.badge.checkmark")
+            saveContext("activateOnService")
+            log("Scheduled \(created.count) posts with the publishing service", symbol: "clock.badge.checkmark", category: "publishing")
             return (created.count, failed)
         } catch {
             failed.append(error.localizedDescription)
@@ -554,26 +689,66 @@ final class AppModel {
         }
     }
 
-    /// Pulls results for every post the service holds (scenario D).
+    /// Safely transfers a scheduled publication between Local Mac and Remote Service
+    /// only after the current owner has definitively canceled/released it.
+    func transferOwner(of p: Publication, to newOwner: PublishOwner) async -> Bool {
+        guard p.publishOwner != newOwner else { return true }
+        if p.publishOwner == .service, let sid = p.serverID {
+            guard let client else {
+                lastError = "Cannot transfer ownership while disconnected from the publishing service."
+                return false
+            }
+            do {
+                let canceled = try await client.cancel(publication: sid)
+                guard canceled.status == "canceled" else {
+                    lastError = "The publishing service could not release the post (status: \(canceled.status))."
+                    return false
+                }
+                p.serverID = nil
+            } catch {
+                lastError = "Could not release post from publishing service: \(error.localizedDescription)"
+                return false
+            }
+        }
+        p.publishOwner = newOwner
+        p.status = .approved
+        p.nextAttemptAt = nil
+        saveContext("transferOwner")
+        log("Transferred “\(p.title)” ownership to \(newOwner.label)", symbol: "arrow.left.arrow.right", category: "publishing", workspace: p.workspaceID)
+        return true
+    }
+
+    /// Pulls results for every post the service holds (scenario D / G).
     func sync() async {
         guard publishMode == .service, let client, let workspaceID else { return }
         do {
-            let result = try await client.publications(updatedSince: nil)
+            let result = try await client.publications(updatedSince: lastSync)
             let local = (try? context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == workspaceID }))) ?? []
             let states = local.map { LocalPublicationState(clientId: $0.uuid.uuidString.lowercased(), serverId: $0.serverID, status: $0.statusRaw,
                                                            publishedUrl: $0.publishedURL, lastError: $0.lastError, attempts: $0.attempts) }
             let (merged, changed) = SyncMerge.merge(local: states, server: result.publications)
             let byClient = Dictionary(local.map { ($0.uuid.uuidString.lowercased(), $0) }, uniquingKeysWith: { a, _ in a })
             for m in merged {
-                guard let p = byClient[m.clientId], p.statusRaw != m.status || p.publishedURL != m.publishedUrl || p.attempts != m.attempts else { continue }
+                guard let p = byClient[m.clientId],
+                      p.statusRaw != m.status || p.publishedURL != m.publishedUrl || p.attempts != m.attempts
+                        || p.lastError != m.lastError || p.serverID != m.serverId else { continue }
                 let was = p.status
-                p.serverID = m.serverId; p.statusRaw = m.status; p.publishedURL = m.publishedUrl; p.lastError = m.lastError
-                p.attempts = m.attempts; p.updatedAt = .now
-                if was != p.status, p.status == .published { log("Published “\(p.title)”", symbol: "checkmark.seal") }
-                if was != p.status, p.status == .failed { log("Failed “\(p.title)”: \(p.lastError ?? "unknown error")", symbol: "exclamationmark.triangle") }
+                p.serverID = m.serverId
+                p.publishOwner = .service
+                p.status = PublicationStatus(server: m.status)
+                p.publishedURL = m.publishedUrl
+                p.lastError = m.lastError
+                p.attempts = m.attempts
+                if was != p.status, p.status == .published {
+                    p.publishedAt = p.publishedAt ?? .now
+                    log("Published “\(p.title)”", symbol: "checkmark.seal", category: "publishing")
+                }
+                if was != p.status, p.status == .failed {
+                    log("Failed “\(p.title)”: \(p.lastError ?? "unknown error")", symbol: "exclamationmark.triangle", category: "publishing")
+                }
             }
-            if changed > 0 { try? context.save() }
-            lastSync = .now
+            if changed > 0 { saveContext("sync") }
+            lastSync = result.serverTime ?? .now
         } catch {
             lastError = error.localizedDescription
         }
@@ -582,38 +757,113 @@ final class AppModel {
     func cancelOnServer(_ p: Publication) async {
         guard let client, let id = p.serverID else {
             p.status = .canceled
-            try? context.save()
+            saveContext("cancelLocal")
             return
         }
         do {
             let r = try await client.cancel(publication: id)
             p.status = PublicationStatus(server: r.status)
-            try? context.save()
+            saveContext("cancelOnServer")
         } catch { lastError = error.localizedDescription }
+    }
+
+    /// Retries a failed, authRequired, actionRequired, or manually-confirmed outcomeUnknown publication cleanly.
+    func retryPublication(_ p: Publication) {
+        p.attempts = 0
+        p.firstTriedAt = nil
+        p.nextAttemptAt = nil
+        p.lastError = nil
+        p.status = .scheduled
+        saveContext("retryPublication")
+        if p.publishOwner == .mac { runner.kick() }
+        log("Queued retry for “\(p.title)”", symbol: "arrow.clockwise", category: "publishing", workspace: p.workspaceID)
+    }
+
+    /// Marks an Outcome Unknown post as confirmed published manually (after user checked the platform).
+    func markOutcomeConfirmedPublished(_ p: Publication, url: String = "") {
+        p.status = .published
+        p.publishedAt = .now
+        if !url.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            p.publishedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        p.lastError = nil
+        saveContext("confirmOutcomePublished")
+        log("Confirmed “\(p.title)” was published", symbol: "checkmark.seal", category: "publishing", workspace: p.workspaceID)
     }
 }
 
 /// Secrets in the login Keychain, never in UserDefaults or files.
-enum Keychain {
+nonisolated enum Keychain {
     static let service = "com.socialforge.app"
 
+    enum KeychainError: LocalizedError {
+        case status(OSStatus)
+        var errorDescription: String? {
+            switch self {
+            case .status(let s):
+                let msg = SecCopyErrorMessageString(s, nil) as String? ?? "OSStatus \(s)"
+                return "Keychain error: \(msg)"
+            }
+        }
+    }
+
+    /// In-memory store used ONLY during APP_STORE test runs so Keychain never leaks or touches user credentials.
+    nonisolated(unsafe) private static var testSecrets: [String: String] = [:]
+    private static let testLock = NSLock()
+
     static func read(_ key: String) -> String? {
-        if Store.isOverridden { return key == "backend.token" ? ProcessInfo.processInfo.environment["APP_BACKEND_TOKEN"] : nil }
+        if Store.isOverridden {
+            if key == "backend.token", let env = ProcessInfo.processInfo.environment["APP_BACKEND_TOKEN"] { return env }
+            return testLock.withLock { testSecrets[key] }
+        }
         let q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: key,
                                   kSecReturnData: true, kSecMatchLimit: kSecMatchLimitOne]
         var out: CFTypeRef?
-        guard SecItemCopyMatching(q as CFDictionary, &out) == errSecSuccess, let data = out as? Data else { return nil }
+        let status = SecItemCopyMatching(q as CFDictionary, &out)
+        guard status == errSecSuccess, let data = out as? Data else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
-    static func write(_ key: String, _ value: String) {
-        if Store.isOverridden { return }
+    @discardableResult
+    static func write(_ key: String, _ value: String) -> Bool {
+        do {
+            try writeStrict(value, for: key)
+            return true
+        } catch {
+            fputs("Keychain write failed for \(key): \(error.localizedDescription)\n", stderr)
+            return false
+        }
+    }
+
+    static func writeStrict(_ value: String, for key: String) throws {
+        if Store.isOverridden {
+            testLock.withLock {
+                if value.isEmpty { testSecrets.removeValue(forKey: key) }
+                else { testSecrets[key] = value }
+            }
+            return
+        }
         let q: [CFString: Any] = [kSecClass: kSecClassGenericPassword, kSecAttrService: service, kSecAttrAccount: key]
-        SecItemDelete(q as CFDictionary)
+        let delStatus = SecItemDelete(q as CFDictionary)
+        if delStatus != errSecSuccess && delStatus != errSecItemNotFound {
+            throw KeychainError.status(delStatus)
+        }
         guard !value.isEmpty else { return }
         var add = q
         add[kSecValueData] = Data(value.utf8)
         add[kSecAttrAccessible] = kSecAttrAccessibleAfterFirstUnlock
-        SecItemAdd(add as CFDictionary, nil)
+        let addStatus = SecItemAdd(add as CFDictionary, nil)
+        if addStatus != errSecSuccess {
+            throw KeychainError.status(addStatus)
+        }
+    }
+
+    /// Safely migrates an existing Keychain entry to a new key without deleting the source until the destination succeeds.
+    @discardableResult
+    static func migrate(from oldKey: String, to newKey: String, removeOld: Bool = false) -> Bool {
+        guard oldKey != newKey, let value = read(oldKey), !value.isEmpty else { return false }
+        guard write(newKey, value) else { return false }
+        if removeOld { write(oldKey, "") }
+        return true
     }
 }

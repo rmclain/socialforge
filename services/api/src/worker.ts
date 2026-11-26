@@ -6,7 +6,9 @@ import { processPublication, RetryLater, type PublishJob } from './publisher.ts'
 import { createServices, PUBLISH_QUEUE, type Services } from './services.ts'
 
 export async function startWorker (svc: Services, log: (msg: string, extra?: object) => void = (m, e) => console.log(JSON.stringify({ msg: m, ...e }))) {
-  return svc.boss.work<PublishJob>(PUBLISH_QUEUE, { pollingIntervalSeconds: svc.config.pollingIntervalSeconds, batchSize: 4 }, async (jobs) => {
+  // batchSize: 1 ensures a RetryLater or failure on one publication never causes pg-boss
+  // to fail or re-run sibling publications in the same batch.
+  return svc.boss.work<PublishJob>(PUBLISH_QUEUE, { pollingIntervalSeconds: svc.config.pollingIntervalSeconds, batchSize: 1 }, async (jobs) => {
     for (const job of jobs) {
       try {
         const outcome = await processPublication(svc, job.data, job.retryCount, job.signal)

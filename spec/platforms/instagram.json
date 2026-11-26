@@ -39,6 +39,15 @@
         "instagram_content_publish"
       ],
       "needsDestination": "none"
+    },
+    {
+      "id": "carousel",
+      "name": "Carousel (needs public media storage)",
+      "requiredScopes": [
+        "instagram_basic",
+        "instagram_content_publish"
+      ],
+      "needsDestination": "none"
     }
   ],
   "text": {

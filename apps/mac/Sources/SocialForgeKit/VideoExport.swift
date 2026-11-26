@@ -84,7 +84,14 @@ final class VideoFrameReader {
             if next == nil, let buffer = output?.copyNextSampleBuffer() {
                 next = (CMSampleBufferGetPresentationTimeStamp(buffer).seconds, buffer)
             }
-            guard let n = next, n.time <= seconds + 0.0001 else { break }
+            guard let n = next else { break }
+            // Avoid a blank frame 0 when the clip's first PTS starts slightly after 0.
+            if current == nil && n.time > seconds + 0.0001 {
+                if let image = upright(n.buffer) { current = (n.time, image) }
+                next = nil
+                break
+            }
+            guard n.time <= seconds + 0.0001 else { break }
             if let image = upright(n.buffer) { current = (n.time, image) }
             next = nil
         }
@@ -288,14 +295,16 @@ public enum VideoExporter {
                 try track.insertTimeRange(CMTimeRange(start: cm(p.from), duration: cm(p.length)), of: src, at: cm(p.at))
                 inserted = true
                 params.setVolume(Float(p.volume), at: cm(p.at))
-                if p.fadeIn > 0 {
+                let half = p.length / 2.0
+                let safeFadeIn = p.fadeIn > 0 ? min(p.fadeIn, p.fadeOut > 0 ? half : p.length) : 0
+                let safeFadeOut = p.fadeOut > 0 ? min(p.fadeOut, p.fadeIn > 0 ? half : p.length) : 0
+                if safeFadeIn > 0.001 {
                     params.setVolumeRamp(fromStartVolume: 0, toEndVolume: Float(p.volume),
-                                         timeRange: CMTimeRange(start: cm(p.at), duration: cm(min(p.fadeIn, p.length))))
+                                         timeRange: CMTimeRange(start: cm(p.at), duration: cm(safeFadeIn)))
                 }
-                if p.fadeOut > 0 {
-                    let f = min(p.fadeOut, p.length)
+                if safeFadeOut > 0.001 {
                     params.setVolumeRamp(fromStartVolume: Float(p.volume), toEndVolume: 0,
-                                         timeRange: CMTimeRange(start: cm(p.at + p.length - f), duration: cm(f)))
+                                         timeRange: CMTimeRange(start: cm(p.at + p.length - safeFadeOut), duration: cm(safeFadeOut)))
                 }
             }
             if inserted { mixParams.append(params) } else { comp.removeTrack(track) }

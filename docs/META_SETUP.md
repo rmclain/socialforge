@@ -6,30 +6,31 @@ a SocialForge server. App ids and secrets, account tokens, and storage keys stay
 your Keychain.
 
 **Status:** built from Meta's documentation (Graph API v25.0, Threads API v1.0) and
-covered by tests against recorded request shapes. It has **not yet been verified with
-a live post**. The first real post on each platform is the test; the Activity log shows
-the exact error if Meta refuses something.
+covered by automated HTTP-stubbed tests. It has **not yet been verified with
+a live post**. The first real post on each platform is the live verification;
+Connections › Diagnostics and the Activity log show sanitized details if Meta refuses something.
 
 ## What posts how
 
 | Post | Uploads from this Mac | Needs public media storage |
 |---|---|---|
-| Facebook Page: text, photo, Reel | Yes | No |
+| Facebook Page: text, photo, multi-photo, link, Reel | Yes | No |
 | Instagram Reel (a video asset) | Yes (resumable upload) | No |
-| Instagram photo | No: Meta fetches it from a URL | **Yes** |
+| Instagram photo or carousel | No: Meta fetches it from a URL | **Yes** |
 | Threads text | Nothing to upload | No |
-| Threads photo or video | No: Meta fetches it from a URL | **Yes** |
+| Threads photo, carousel, or video | No: Meta fetches it from a URL | **Yes** |
 
 Public media storage is an S3-compatible bucket you own, such as Cloudflare R2 (see the
-end of this guide). Files go in a random folder and are deleted once the post is out.
+end of this guide). Files are written under unpredictable random keys and deleted once the
+post finishes or fails.
 
 ## 1. Before you start
 
-- **Instagram must be a professional account** (Business or Creator) and **linked to a
-  Facebook Page** you manage. In the Instagram app: Settings › Account type and tools ›
-  Switch to professional account; then link it to the Page (Instagram: Settings ›
-  Accounts Center, or the Page's settings › Linked accounts). Personal Instagram
-  accounts can't be posted to by any app.
+- **Instagram must be a professional account** (Business or Creator). SocialForge supports
+  both **Facebook Login** (for Instagram accounts linked to a Facebook Page) and direct
+  **Instagram Business Login** (when you configure an Instagram app ID/secret in the
+  Instagram Setup Wizard under **Connections**). Personal Instagram accounts cannot be
+  posted to via Meta's API.
 - **Facebook** posting is to **Pages** only, not personal profiles.
 - Your Mac posts while it is awake (SocialForge open, or "Publish while SocialForge is
   closed" on). Due posts go out when it wakes.

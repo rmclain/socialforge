@@ -37,7 +37,11 @@ export function validatePublication (spec: PlatformSpec | undefined, payload: Pi
   const ct = spec.contentTypes[0]
   const missing = ct.requiredScopes.filter((s) => !scopes.includes(s))
   if (missing.length) problems.push(`The account is missing permission: ${missing.join(', ')}.`)
-  const fields: [string, string][] = [['title', payload.title], ['description', payload.description], ['alt_text', payload.altText], ['link', payload.link]]
+  const fields: [string, string][] = [
+    ['title', payload.title], ['description', payload.description], ['caption', payload.description || payload.title],
+    ['message', payload.description || payload.title], ['commentary', payload.description || payload.title],
+    ['text', payload.description || payload.title], ['alt_text', payload.altText], ['link', payload.link],
+  ]
   for (const [key, value] of fields) {
     const rule = spec.text[key]
     if (!rule) continue
@@ -51,8 +55,9 @@ export function validatePublication (spec: PlatformSpec | undefined, payload: Pi
   }
   if (media && !spec.image) problems.push(`${spec.name} does not take image posts.`)
   if (media && spec.image) {
-    const format = media.contentType.replace('image/', '').replace('jpg', 'jpeg')
-    if (!spec.image.formats.includes(format)) problems.push(`${media.contentType} is not accepted by ${spec.name}.`)
+    const cleanType = media.contentType.split(';')[0].trim().toLowerCase()
+    const format = cleanType.replace('image/', '').replace('jpg', 'jpeg')
+    if (!spec.image.formats.includes(format)) problems.push(`${cleanType} is not accepted by ${spec.name}.`)
     if (spec.image.maxBytesEnforced && media.bytes > spec.image.maxBytes) problems.push(`The image is larger than ${spec.image.maxBytes / 1_048_576} MB.`)
   }
   return problems

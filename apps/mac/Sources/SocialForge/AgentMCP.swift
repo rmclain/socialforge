@@ -19,16 +19,25 @@ enum AgentMCP {
 
     static func run() -> Never {
         setvbuf(stdout, nil, _IOLBF, 0)
-        let container = try? ModelContainer(for: SwiftData.Schema(AppSchema.models),
-                                            configurations: ModelConfiguration(url: Store.url, allowsSave: false))
+        var container: ModelContainer? = try? ModelContainer(for: SwiftData.Schema(AppSchema.models),
+                                                             configurations: ModelConfiguration(url: Store.url, allowsSave: false))
         let inbox = AgentInbox(root: Store.inboxURL)
         var session = MCPSession(serverName: "socialforge", serverVersion: UpdateSettings.currentVersion,
                                  instructions: instructions, tools: AgentTools.all) { name, args, client in
+            if container == nil {
+                container = try? ModelContainer(for: SwiftData.Schema(AppSchema.models),
+                                                configurations: ModelConfiguration(url: Store.url, allowsSave: false))
+            }
             guard let container else { return MCPToolOutcome("SocialForge's library could not be opened. Open SocialForge once, then try again.", isError: true) }
             // A fresh context per call, so each answer sees what the app saved since the last one.
             return handle(name, args: args, client: client, context: ModelContext(container), inbox: inbox)
         }
         while let line = readLine(strippingNewline: true) {
+            if line.utf8.count > 2 * 1024 * 1024 {
+                let err = #"{"jsonrpc":"2.0","id":null,"error":{"code":-32600,"message":"Request exceeds 2 MB limit"}}"#
+                FileHandle.standardOutput.write(Data((err + "\n").utf8))
+                continue
+            }
             if let reply = session.handle(line) {
                 FileHandle.standardOutput.write(Data((reply + "\n").utf8))
             }
@@ -58,12 +67,16 @@ enum AgentMCP {
                 ["id": .string(a.serverID), "platform": .string(a.platform), "name": .string(a.name), "handle": .string(a.handle),
                  "status": .string(a.status), "test_account": .bool(a.isMock)]
             }, empty: "\(ws.name) has no connected accounts yet. The person connects them in SocialForge > Accounts.")
-        case "list_media":
+        case "list_media", "search_media":
             guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
             let id = ws.uuid
             var items = (try? context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == id }, sortBy: [SortDescriptor(\.importedAt, order: .reverse)]))) ?? []
             if let q = args["query"]?.stringValue, !q.isEmpty {
-                items = items.filter { $0.filename.localizedCaseInsensitiveContains(q) || $0.title.localizedCaseInsensitiveContains(q) || $0.tags.contains { $0.localizedCaseInsensitiveContains(q) } }
+                items = items.filter {
+                    $0.filename.localizedCaseInsensitiveContains(q) || $0.title.localizedCaseInsensitiveContains(q)
+                        || $0.notes.localizedCaseInsensitiveContains(q)
+                        || $0.tags.contains { $0.localizedCaseInsensitiveContains(q) }
+                }
             }
             if let c = args["collection"]?.stringValue, !c.isEmpty { items = items.filter { $0.collection.caseInsensitiveCompare(c) == .orderedSame } }
             if let k = args["kind"]?.stringValue, !k.isEmpty { items = items.filter { $0.kind == k } }
@@ -73,6 +86,114 @@ enum AgentMCP {
                  "tags": .array(a.tags.map(JSONValue.string)), "width": .number(Double(a.width)), "height": .number(Double(a.height)),
                  "path": .string(a.storedPath), "imported_at": .string(AgentTools.iso(a.importedAt))]
             }, empty: "No media matches in \(ws.name).")
+        case "list_campaigns":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let campaigns = (try? context.fetch(FetchDescriptor<Campaign>(predicate: #Predicate { $0.workspaceID == id }, sortBy: [SortDescriptor(\.startDate, order: .reverse)]))) ?? []
+            let posts = (try? context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == id }))) ?? []
+            return json(campaigns.map { c in
+                let count = posts.count { $0.campaignID == c.uuid }
+                return ["id": .string(c.uuid.uuidString), "name": .string(c.name), "goal": .string(c.goal),
+                        "start_date": .string(AgentTools.iso(c.startDate)), "end_date": .string(AgentTools.iso(c.endDate)),
+                        "utm_source": .string(c.utmSource), "utm_medium": .string(c.utmMedium), "utm_campaign": .string(c.utmCampaign),
+                        "post_count": .number(Double(count))]
+            }, empty: "No campaigns in \(ws.name).")
+        case "list_templates":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let templates = (try? context.fetch(FetchDescriptor<CreativeTemplate>(predicate: #Predicate { $0.workspaceID == id }, sortBy: [SortDescriptor(\.name)]))) ?? []
+            return json(templates.map { t in
+                let doc = t.document
+                return ["id": .string(t.uuid.uuidString), "name": .string(t.name), "category": .string(t.category),
+                        "width": .number(Double(doc?.width ?? 0)), "height": .number(Double(doc?.height ?? 0))]
+            }, empty: "No templates in \(ws.name).")
+        case "list_platforms":
+            return json(PlatformRegistry.all.map { spec in
+                ["id": .string(spec.id), "name": .string(spec.name), "status": .string(spec.status),
+                 "live_verified": .bool(spec.liveVerified),
+                 "content_types": .array(spec.contentTypes.map { .string($0.id) })]
+            })
+        case "list_boards":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let acctID = args["account_id"]?.stringValue ?? ""
+            let posts = (try? context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == id }))) ?? []
+            let boardIDs = Array(Set(posts.filter { (acctID.isEmpty || $0.accountID == acctID) && !$0.boardID.isEmpty }.map(\.boardID))).sorted()
+            return json(boardIDs.map { ["board_id": .string($0)] }, empty: "No boards cached locally for \(ws.name). Open SocialForge to refresh boards from Pinterest.")
+        case "inspect_account_capabilities":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let acctRef = args["account_id"]?.stringValue ?? ""
+            let accounts = (try? context.fetch(FetchDescriptor<SocialAccount>(predicate: #Predicate { $0.workspaceID == id }))) ?? []
+            let matched = acctRef.isEmpty ? accounts : accounts.filter { $0.serverID == acctRef || $0.name.caseInsensitiveCompare(acctRef) == .orderedSame }
+            let hasStorage = PublicMediaSettings.config() != nil
+            return json(matched.map { a in
+                let caps = a.capabilities
+                let missing = Array(Set(caps.flatMap(\.missingScopes))).sorted()
+                let supported = caps.filter(\.allowed).map(\.contentType.id)
+                var limits: [String] = []
+                if a.authMode == "sandbox" { limits.append("Sandbox mode") }
+                if !hasStorage && ["instagram", "threads"].contains(a.platform) { limits.append("Requires S3/R2 public media storage") }
+                return ["id": .string(a.serverID), "platform": .string(a.platform), "name": .string(a.name),
+                        "status": .string(a.connectionStatus.rawValue), "account_type": .string(a.accountType),
+                        "auth_mode": .string(a.authMode),
+                        "granted_scopes": .array(a.scopes.map(JSONValue.string)),
+                        "missing_scopes": .array(missing.map(JSONValue.string)),
+                        "supported_content_types": .array(supported.map(JSONValue.string)),
+                        "limitations": .array(limits.map(JSONValue.string))]
+            }, empty: "No matching account in \(ws.name).")
+        case "validate_posts":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let statusFilter = args["status"]?.stringValue
+            let posts = ((try? context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == id }))) ?? []).filter { p in
+                if let statusFilter, !statusFilter.isEmpty { return p.statusRaw == statusFilter }
+                return p.status == .draft || p.status == .needsReview
+            }
+            let assets = Dictionary(((try? context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == id }))) ?? []).map { ($0.uuid, $0) }, uniquingKeysWith: { a, _ in a })
+            let hasStorage = PublicMediaSettings.config() != nil
+            return json(posts.prefix(limit(args)).map { p in
+                let a = p.assetID.flatMap { assets[$0] }
+                let isVideo = a?.kind == "video"
+                let draft = PostDraft(
+                    platform: p.platform, title: p.title, description: p.desc, link: p.link, altText: p.altText,
+                    destinationID: p.boardID.isEmpty ? nil : p.boardID,
+                    image: isVideo ? nil : a?.imageFacts,
+                    isVideo: isVideo,
+                    hasPublicMediaHost: hasStorage
+                )
+                var issues = PostValidator.validate(draft)
+                if let a, isVideo {
+                    issues += PostValidator.validateVideo(platform: p.platform, seconds: a.duration, width: a.width, height: a.height, bytes: a.bytes, format: a.format)
+                }
+                return ["post_id": .string(p.uuid.uuidString), "platform": .string(p.platform), "status": .string(p.statusRaw),
+                        "error_count": .number(Double(issues.count { $0.level == .error })),
+                        "warning_count": .number(Double(issues.count { $0.level == .warning })),
+                        "issues": .array(issues.map { .object(["severity": .string($0.level == .error ? "error" : "warning"), "message": .string($0.message)]) })]
+            }, empty: "No posts to validate in \(ws.name).")
+        case "inspect_schedule_availability":
+            guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
+            let id = ws.uuid
+            let days = min(90, max(1, Int(args["days"]?.numberValue ?? 14)))
+            let now = Date()
+            let cal = Calendar.current
+            let start = cal.startOfDay(for: now)
+            let end = cal.date(byAdding: .day, value: days, to: start) ?? start.addingTimeInterval(Double(days) * 86_400)
+            let posts = ((try? context.fetch(FetchDescriptor<Publication>(predicate: #Predicate { $0.workspaceID == id }))) ?? [])
+                .filter { $0.scheduledAt >= start && $0.scheduledAt < end && $0.status != .canceled }
+            let fmt = DateFormatter()
+            fmt.locale = Locale(identifier: "en_US_POSIX")
+            fmt.dateFormat = "yyyy-MM-dd"
+            var counts: [String: Int] = [:]
+            for p in posts { counts[fmt.string(from: p.scheduledAt), default: 0] += 1 }
+            var rows: [[String: JSONValue]] = []
+            for offset in 0..<days {
+                if let d = cal.date(byAdding: .day, value: offset, to: start) {
+                    let key = fmt.string(from: d)
+                    rows.append(["date": .string(key), "scheduled_count": .number(Double(counts[key, default: 0]))])
+                }
+            }
+            return json(rows)
         case "list_posts":
             guard let ws = AgentLibrary.workspace(args["brand"]?.stringValue, context) else { return noBrand(args) }
             let id = ws.uuid

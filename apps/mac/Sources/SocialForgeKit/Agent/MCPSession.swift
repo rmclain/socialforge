@@ -32,12 +32,19 @@ public struct MCPSession {
         let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard let data = trimmed.data(using: .utf8),
-              let message = try? JSONDecoder().decode(JSONValue.self, from: data).objectValue else {
+              let decoded = try? JSONDecoder().decode(JSONValue.self, from: data) else {
             return Self.encode(["jsonrpc": .string("2.0"), "id": .null, "error": Self.error(-32700, "Parse error")])
         }
-        let method = message["method"]?.stringValue ?? ""
+        guard let message = decoded.objectValue,
+              message["jsonrpc"]?.stringValue == "2.0",
+              let method = message["method"]?.stringValue, !method.isEmpty else {
+            return Self.encode(["jsonrpc": .string("2.0"), "id": .null, "error": Self.error(-32600, "Invalid Request")])
+        }
         // A notification has no id and gets no answer.
         guard let id = message["id"] else { return nil }
+        if case .null = id {
+            return Self.encode(["jsonrpc": .string("2.0"), "id": .null, "error": Self.error(-32600, "Invalid Request: id must not be null")])
+        }
         let params = message["params"]?.objectValue ?? [:]
         let reply: [String: JSONValue]
         switch method {

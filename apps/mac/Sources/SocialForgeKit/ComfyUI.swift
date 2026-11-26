@@ -53,6 +53,39 @@ public struct ComfyInputRef: Codable, Sendable, Hashable {
     public init(node: String, input: String) { self.node = node; self.input = input }
 }
 
+/// Named ComfyUI server profile (local GPU, LAN workstation, or remote HTTPS server).
+public struct ComfyServerProfile: Codable, Sendable, Equatable, Identifiable {
+    public var id: String
+    public var name: String
+    public var baseURL: String
+    public var isDefault: Bool
+
+    public init(id: String = UUID().uuidString, name: String, baseURL: String, isDefault: Bool = false) {
+        self.id = id; self.name = name; self.baseURL = baseURL; self.isDefault = isDefault
+    }
+}
+
+/// Result of checking a workflow against a ComfyUI server's `/object_info`.
+public struct ComfyWorkflowValidation: Sendable, Equatable {
+    public var missingNodes: [String]
+    public var missingModels: [String]
+    public var warnings: [String]
+
+    public var isValid: Bool { missingNodes.isEmpty && missingModels.isEmpty }
+    public init(missingNodes: [String] = [], missingModels: [String] = [], warnings: [String] = []) {
+        self.missingNodes = missingNodes; self.missingModels = missingModels; self.warnings = warnings
+    }
+}
+
+/// Current state of a submitted ComfyUI job, used for restart recovery and cancellation.
+public enum ComfyJobState: Sendable, Equatable {
+    case queued(position: Int)
+    case running
+    case completed([ComfyOutputImage])
+    case failed(String)
+    case notFound
+}
+
 /// Where SocialForge writes its values into a workflow. Nil means "leave the workflow's own value".
 public struct ComfyMapping: Codable, Sendable, Equatable {
     public var positive: ComfyInputRef?
@@ -62,6 +95,8 @@ public struct ComfyMapping: Codable, Sendable, Equatable {
     public var height: ComfyInputRef?
     public var batch: ComfyInputRef?
     public var checkpoint: ComfyInputRef?
+    /// Input image filename (on LoadImage) for image-to-image, image-to-video, inpaint, or upscale workflows.
+    public var inputImage: ComfyInputRef?
     /// Frames, on a video latent (LTX, Hunyuan, Wan, Mochi, Cosmos).
     public var length: ComfyInputRef?
     /// Seconds, on an audio latent (ACE-Step) or a music node's maximum length (YuE).
@@ -72,9 +107,9 @@ public struct ComfyMapping: Codable, Sendable, Equatable {
     public var fps: [ComfyInputRef] = []
 
     public init(positive: ComfyInputRef? = nil, negative: ComfyInputRef? = nil, seed: ComfyInputRef? = nil, width: ComfyInputRef? = nil,
-                height: ComfyInputRef? = nil, batch: ComfyInputRef? = nil, checkpoint: ComfyInputRef? = nil) {
+                height: ComfyInputRef? = nil, batch: ComfyInputRef? = nil, checkpoint: ComfyInputRef? = nil, inputImage: ComfyInputRef? = nil) {
         self.positive = positive; self.negative = negative; self.seed = seed; self.width = width
-        self.height = height; self.batch = batch; self.checkpoint = checkpoint
+        self.height = height; self.batch = batch; self.checkpoint = checkpoint; self.inputImage = inputImage
     }
 }
 
@@ -113,7 +148,7 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
 
     /// The graph with SocialForge's values written in. Nil values keep the workflow's own.
     public func applying(prompt: String, negative: String?, seed: Int, width: Int?, height: Int?, batch: Int?, checkpoint: String?,
-                         length: Int? = nil, seconds: Double? = nil, lyrics: String? = nil) -> [String: JSONValue] {
+                         length: Int? = nil, seconds: Double? = nil, lyrics: String? = nil, inputImage: String? = nil, fps: Double? = nil) -> [String: JSONValue] {
         var g = graph
         func set(_ ref: ComfyInputRef?, _ value: JSONValue?) {
             guard let ref, let value, var node = g[ref.node]?.objectValue else { return }
@@ -129,9 +164,13 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         set(mapping.height, height.map { .number(Double($0)) })
         set(mapping.batch, batch.map { .number(Double($0)) })
         set(mapping.checkpoint, checkpoint.map(JSONValue.string))
+        set(mapping.inputImage, inputImage.map(JSONValue.string))
         set(mapping.length, length.map { .number(Double($0)) })
         set(mapping.seconds, seconds.map { .number($0) })
         set(mapping.lyrics, lyrics.map(JSONValue.string))
+        if let fps, fps > 0 {
+            for ref in mapping.fps { set(ref, .number(fps)) }
+        }
         return g
     }
 
@@ -237,9 +276,9 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         return nil
     }
 
-    static let samplerClasses: Set<String> = ["KSampler", "KSamplerAdvanced"]
+    static let samplerClasses: Set<String> = ["KSampler", "KSamplerAdvanced", "SamplerCustom", "SamplerCustomAdvanced"]
     static let latentClasses: Set<String> = ["EmptyLatentImage", "EmptySD3LatentImage", "EmptyFlux2LatentImage", "EmptyHunyuanImageLatent", "EmptyLTXVLatentVideo", "EmptyHunyuanLatentVideo",
-                                             "EmptyMochiLatentVideo", "EmptyCosmosLatentVideo", "EmptyAceStepLatentAudio",
+                                             "EmptyWanLatentVideo", "EmptyMochiLatentVideo", "EmptyCosmosLatentVideo", "EmptyAceStepLatentAudio",
                                              "EmptyYuE2LatentAudio"]
 
     static func detectMapping(_ graph: [String: JSONValue]) -> ComfyMapping {
@@ -247,13 +286,30 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         let ids = sortedIDs(graph.keys)
         if let sampler = ids.first(where: { samplerClasses.contains(classType(graph, $0) ?? "") }) {
             let ins = inputs(graph, sampler)
-            if ins["seed"] != nil { m.seed = ComfyInputRef(node: sampler, input: "seed") }
-            else if ins["noise_seed"] != nil { m.seed = ComfyInputRef(node: sampler, input: "noise_seed") }
-            m.positive = findTextInput(graph, from: linkTarget(ins["positive"]), role: "positive")
-            m.negative = findTextInput(graph, from: linkTarget(ins["negative"]), role: "negative")
+            if ins["seed"]?.numberValue != nil { m.seed = ComfyInputRef(node: sampler, input: "seed") }
+            else if ins["noise_seed"]?.numberValue != nil { m.seed = ComfyInputRef(node: sampler, input: "noise_seed") }
+            else if let noiseNode = linkTarget(ins["noise"]), inputs(graph, noiseNode)["noise_seed"]?.numberValue != nil {
+                m.seed = ComfyInputRef(node: noiseNode, input: "noise_seed")
+            }
+            if let posLink = linkTarget(ins["positive"]) {
+                m.positive = findTextInput(graph, from: posLink, role: "positive")
+            } else if let guider = linkTarget(ins["guider"]) {
+                let gIns = inputs(graph, guider)
+                m.positive = findTextInput(graph, from: linkTarget(gIns["conditioning"]) ?? linkTarget(gIns["positive"]), role: "positive")
+                m.negative = findTextInput(graph, from: linkTarget(gIns["negative"]), role: "negative")
+            }
+            if m.negative == nil {
+                m.negative = findTextInput(graph, from: linkTarget(ins["negative"]), role: "negative")
+            }
             if m.negative == m.positive { m.negative = nil }
             if let latent = linkTarget(ins["latent_image"]), latentClasses.contains(classType(graph, latent) ?? "") {
                 fillLatent(&m, graph, latent)
+            }
+        }
+        // Fallback: RandomNoise node for Flux / SamplerCustomAdvanced graphs.
+        if m.seed == nil, let noise = ids.first(where: { classType(graph, $0) == "RandomNoise" }) {
+            if inputs(graph, noise)["noise_seed"]?.numberValue != nil {
+                m.seed = ComfyInputRef(node: noise, input: "noise_seed")
             }
         }
         if m.width == nil, let latent = ids.first(where: { latentClasses.contains(classType(graph, $0) ?? "") }) {
@@ -261,6 +317,10 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
         }
         if let ckpt = ids.first(where: { classType(graph, $0) == "CheckpointLoaderSimple" }), inputs(graph, ckpt)["ckpt_name"]?.stringValue != nil {
             m.checkpoint = ComfyInputRef(node: ckpt, input: "ckpt_name")
+        }
+        // Input image for img2img, img2vid, inpainting, or upscaling workflows.
+        if let loadImg = ids.first(where: { classType(graph, $0) == "LoadImage" }), inputs(graph, loadImg)["image"]?.stringValue != nil {
+            m.inputImage = ComfyInputRef(node: loadImg, input: "image")
         }
         // Music nodes (YuE, ACE-Step) take a style or tags line and lyrics instead of a text encoder.
         if let music = ids.first(where: { inputs(graph, $0)["lyrics"]?.stringValue != nil }) {
@@ -270,6 +330,10 @@ public struct ComfyWorkflow: Codable, Sendable, Equatable {
                 for key in ["style", "tags", "genre"] where ins[key]?.stringValue != nil { m.positive = ComfyInputRef(node: music, input: key); break }
             }
             if m.negative?.node == music { m.negative = nil }
+            if m.seed == nil {
+                if ins["seed"]?.numberValue != nil { m.seed = ComfyInputRef(node: music, input: "seed") }
+                else if ins["noise_seed"]?.numberValue != nil { m.seed = ComfyInputRef(node: music, input: "noise_seed") }
+            }
             if m.seconds == nil {
                 for key in ["max_duration", "seconds", "duration"] where ins[key]?.numberValue != nil { m.seconds = ComfyInputRef(node: music, input: key); break }
             }
@@ -447,6 +511,72 @@ public struct ComfyUIClient: Sendable {
         return try await send(req).0
     }
 
+    /// Validates a workflow against the server's installed nodes and models (`GET /object_info`).
+    /// Never installs nodes or downloads models automatically; reports what is missing clearly.
+    public func validateWorkflow(_ workflow: ComfyWorkflow) async throws -> ComfyWorkflowValidation {
+        let (data, _) = try await send(request("object_info", timeout: 20))
+        guard let catalog = (try? JSONDecoder().decode(JSONValue.self, from: data))?.objectValue else {
+            throw ClientError.badResponse("object_info was not a JSON object")
+        }
+        var missingNodes: [String] = []
+        var missingModels: [String] = []
+        var warnings: [String] = []
+        if !workflow.unmappedRequired.isEmpty {
+            warnings.append("Missing mapped inputs: \(workflow.unmappedRequired.joined(separator: ", "))")
+        }
+        let modelKeys = ["ckpt_name", "unet_name", "clip_name", "vae_name", "lora_name", "control_net_name", "model_name"]
+        for id in ComfyWorkflow.sortedIDs(workflow.graph.keys) {
+            guard let cls = ComfyWorkflow.classType(workflow.graph, id) else { continue }
+            guard let info = catalog[cls]?.objectValue else {
+                if !missingNodes.contains(cls) { missingNodes.append(cls) }
+                continue
+            }
+            let required = info["input"]?.objectValue?["required"]?.objectValue ?? [:]
+            let ins = ComfyWorkflow.inputs(workflow.graph, id)
+            for key in modelKeys {
+                guard let wanted = ins[key]?.stringValue, !wanted.isEmpty,
+                      let allowed = required[key]?.arrayValue?.first?.arrayValue?.compactMap(\.stringValue) else { continue }
+                if !allowed.contains(wanted) {
+                    let entry = "\(cls).\(key): \(wanted)"
+                    if !missingModels.contains(entry) { missingModels.append(entry) }
+                }
+            }
+        }
+        return ComfyWorkflowValidation(missingNodes: missingNodes, missingModels: missingModels, warnings: warnings)
+    }
+
+    /// Inspects both `/queue` and `/history/{promptID}` to recover a job's status across restarts.
+    public func jobStatus(promptID: String) async throws -> ComfyJobState {
+        do {
+            if let files = try await outputs(promptID: promptID) {
+                return .completed(files)
+            }
+        } catch ClientError.executionFailed(let reason) {
+            return .failed(reason)
+        }
+        let (qData, _) = try await send(request("queue", timeout: 10))
+        if let qObj = (try? JSONDecoder().decode(JSONValue.self, from: qData))?.objectValue {
+            let running = qObj["queue_running"]?.arrayValue ?? []
+            for item in running {
+                if item.arrayValue?.dropFirst().first?.stringValue == promptID {
+                    return .running
+                }
+            }
+            let pending = qObj["queue_pending"]?.arrayValue ?? []
+            for (idx, item) in pending.enumerated() {
+                if item.arrayValue?.dropFirst().first?.stringValue == promptID {
+                    return .queued(position: idx + 1)
+                }
+            }
+        }
+        return .notFound
+    }
+
+    /// Explicitly interrupts whatever job is currently running on the server (global action; use only with user confirmation).
+    public func interruptCurrentRunningJob() async throws {
+        try await interrupt()
+    }
+
     /// Stops the job that is running now.
     public func interrupt() async throws {
         _ = try await send(request("interrupt", method: "POST"))
@@ -513,16 +643,29 @@ public struct ComfyUIClient: Sendable {
 
     /// Like `run`, keeping each output's file name, so videos and audio keep their real type.
     public func runFiles(graph: [String: JSONValue], clientID: String = UUID().uuidString, pollEvery: Duration = .seconds(1),
-                         timeout: Duration = .seconds(600)) async throws -> [ComfyOutputFile] {
+                         timeout: Duration = .seconds(600),
+                         onSubmitted: (@Sendable (String) -> Void)? = nil) async throws -> [ComfyOutputFile] {
         let promptID = try await submit(graph: graph, clientID: clientID)
+        onSubmitted?(promptID)
         let deadline = ContinuousClock.now.advanced(by: timeout)
+        var consecutivePollErrors = 0
         do {
             while true {
                 try Task.checkCancellation()
-                if let images = try await outputs(promptID: promptID) {
-                    var out: [ComfyOutputFile] = []
-                    for o in images { out.append(ComfyOutputFile(filename: o.filename, data: try await image(o))) }
-                    return out
+                do {
+                    if let images = try await outputs(promptID: promptID) {
+                        var out: [ComfyOutputFile] = []
+                        for o in images { out.append(ComfyOutputFile(filename: o.filename, data: try await image(o))) }
+                        return out
+                    }
+                    consecutivePollErrors = 0
+                } catch let e as ClientError {
+                    throw e
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    consecutivePollErrors += 1
+                    if consecutivePollErrors >= 5 { throw error }
                 }
                 if ContinuousClock.now >= deadline {
                     await stop(promptID: promptID)
@@ -541,19 +684,33 @@ public struct ComfyUIClient: Sendable {
 
     // MARK: Plumbing
 
-    /// Removes the prompt from the queue and interrupts it if it is running.
+    /// Removes the prompt from the queue; only interrupts if this prompt is the one running (never kills another user's job).
     /// Runs in its own task so it still goes out after the caller was cancelled.
     func stop(promptID: String) async {
         let client = self
         await Task {
+            // 1. Delete from pending queue first.
             var del = client.request("queue", method: "POST")
             del.setValue("application/json", forHTTPHeaderField: "Content-Type")
             del.httpBody = try? JSONEncoder().encode(JSONValue.object(["delete": .array([.string(promptID)])]))
             _ = try? await client.send(del)
-            var intr = client.request("interrupt", method: "POST")
-            intr.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            intr.httpBody = try? JSONEncoder().encode(JSONValue.object(["prompt_id": .string(promptID)]))
-            _ = try? await client.send(intr)
+
+            // 2. Check whether a *different* job is currently running before calling /interrupt.
+            var shouldInterrupt = true
+            if let (qData, _) = try? await client.send(client.request("queue", timeout: 5)),
+               let qObj = (try? JSONDecoder().decode(JSONValue.self, from: qData))?.objectValue,
+               let running = qObj["queue_running"]?.arrayValue {
+                let runningIDs = running.compactMap { $0.arrayValue?.dropFirst().first?.stringValue }
+                if !runningIDs.isEmpty && !runningIDs.contains(promptID) {
+                    shouldInterrupt = false
+                }
+            }
+            if shouldInterrupt {
+                var intr = client.request("interrupt", method: "POST")
+                intr.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                intr.httpBody = try? JSONEncoder().encode(JSONValue.object(["prompt_id": .string(promptID)]))
+                _ = try? await client.send(intr)
+            }
         }.value
     }
 

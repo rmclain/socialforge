@@ -68,7 +68,7 @@ struct CommandPanel: View {
                     Button(planning ? "Planning…" : "Plan") { Task { await makePlan() } }.buttonStyle(PrimaryButtonStyle())
                         .disabled(request.isEmpty || planning || model.textProvider == nil).keyboardShortcut(.defaultAction)
                 } else {
-                    Button("Re-plan") { plan = nil; results = [] }.buttonStyle(SecondaryButtonStyle())
+                    Button("Re-plan") { plan = nil; results = []; allowApproval = false }.buttonStyle(SecondaryButtonStyle())
                     Button(running ? "Running…" : "Run") { Task { await execute() } }.buttonStyle(PrimaryButtonStyle())
                         .disabled(running).keyboardShortcut(.defaultAction)
                 }
@@ -84,6 +84,7 @@ struct CommandPanel: View {
         guard let provider = model.textProvider, !request.isEmpty else { return }
         planning = true
         error = nil
+        allowApproval = false
         defer { planning = false }
         let context: [String: String] = [
             "selected_images": "\(model.mediaSelection.count)",
@@ -111,9 +112,10 @@ struct CommandPanel: View {
         running = true
         defer { running = false }
         results = []
+        var planScopeIDs: Set<UUID> = []
         for a in plan.actions {
             if a.requiresApproval && !allowApproval { results.append("Skipped “\(a.summary)”: not approved."); continue }
-            results.append(await ToolRunner.run(a, model: model))
+            results.append(await ToolRunner.run(a, model: model, scopePostIDs: &planScopeIDs))
         }
     }
 }
@@ -121,9 +123,12 @@ struct CommandPanel: View {
 /// The only things the assistant can do. Each maps to an existing app function.
 @MainActor
 enum ToolRunner {
-    static func run(_ a: PlannedAction, model: AppModel) async -> String {
+    static func run(_ a: PlannedAction, model: AppModel, scopePostIDs: inout Set<UUID>) async -> String {
         let args = a.args
-        let mine = ((try? model.context.fetch(FetchDescriptor<MediaAsset>())) ?? []).filter { $0.workspaceID == model.workspaceID }
+        let mine: [MediaAsset] = {
+            guard let wsID = model.workspaceID else { return [] }
+            return (try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == wsID }))) ?? []
+        }()
         switch a.tool {
         case "list_media":
             return "The library has \(mine.count) items; \(model.mediaSelection.count) selected."
@@ -147,8 +152,25 @@ enum ToolRunner {
             await model.studio.applyTemplate(t, to: model.assets(model.mediaSelection), model: model)
             return "Applied “\(t.name)”."
         case "create_posts", "schedule_posts":
+            // Prevent duplicate post creation if a plan contains both create_posts and schedule_posts.
+            if a.tool == "schedule_posts", !scopePostIDs.isEmpty {
+                let bulk = model.bulk
+                if let start = args["start"].flatMap({ ISO8601.parse($0 + "T12:00:00Z") ?? ISO8601.parse($0) }) { bulk.rule.start = LocalDay(start, in: .current) }
+                if let t = args["time"], let time = parseTime(t) { bulk.rule.times = [time] }
+                if let e = args["every_days"].flatMap(Int.init) { bulk.rule.everyDays = max(1, e); bulk.rule.everyHours = nil }
+                if args["skip_weekends"] == "true" { bulk.skipWeekends = true }
+                let created = model.workspacePublications.filter { scopePostIDs.contains($0.uuid) }.sorted { $0.scheduledAt < $1.scheduledAt }
+                let slots = (try? ScheduleBuilder.slots(bulk.rule, count: created.count)) ?? []
+                for (p, s) in zip(created, slots) {
+                    p.scheduledAt = s.instant
+                    p.timeZoneID = bulk.rule.timeZoneID
+                    p.updatedAt = .now
+                }
+                try? model.context.save()
+                return "Updated schedule for \(created.count) newly created posts."
+            }
             let bulk = model.bulk
-            let acct = model.accounts.first { a in args["account"].map { a.name.lowercased().contains($0.lowercased()) } ?? (a.platform == "pinterest") }
+            let acct = model.accounts.first { a in args["account"].map { a.name.lowercased().contains($0.lowercased()) || a.platform.lowercased() == $0.lowercased() } ?? true }
             let board = acct.flatMap { a in model.boards[a.serverID]?.first { b in args["board"].map { b.name.lowercased().contains($0.lowercased()) } ?? true } }
             if let start = args["start"].flatMap({ ISO8601.parse($0 + "T12:00:00Z") ?? ISO8601.parse($0) }) { bulk.rule.start = LocalDay(start, in: .current) }
             if let t = args["time"], let time = parseTime(t) { bulk.rule.times = [time] }
@@ -160,6 +182,7 @@ enum ToolRunner {
             bulk.rematch(assets: assets)
             do {
                 let made = try bulk.createPosts(model: model, assets: assets, account: acct, board: board)
+                scopePostIDs.formUnion(made.map(\.uuid))
                 bulk.assetIDs = []
                 return "Created \(made.count) posts in Needs Review, starting \(bulk.rule.start.formatted) at \(bulk.rule.times.map(\.label).joined(separator: ", "))."
             } catch {
@@ -167,7 +190,9 @@ enum ToolRunner {
             }
         case "generate_copy":
             guard let provider = model.textProvider else { return "No text provider." }
-            let posts = model.workspacePublications.filter { $0.status == .needsReview }
+            let posts = model.workspacePublications.filter {
+                $0.status == .needsReview && (scopePostIDs.isEmpty || scopePostIDs.contains($0.uuid))
+            }
             var n = 0
             for p in posts {
                 let req = CopyRequest(platform: p.platform, productName: p.title, filename: model.asset(p.assetID)?.filename ?? "", link: p.link,
@@ -181,16 +206,24 @@ enum ToolRunner {
             try? model.context.save()
             return "Wrote copy for \(n) posts in review."
         case "validate_posts":
-            let posts = model.workspacePublications.filter { $0.status.isLocal }
+            let posts = model.workspacePublications.filter {
+                $0.status.isLocal && (scopePostIDs.isEmpty || scopePostIDs.contains($0.uuid))
+            }
             let bad = posts.filter { $0.hasErrors(model: model) }
             return "\(posts.count - bad.count) of \(posts.count) posts are ready; \(bad.count) have problems."
         case "approve_posts":
-            let ok = model.workspacePublications.filter { $0.status == .needsReview && !$0.hasErrors(model: model) }
-            for p in ok { p.status = .approved }
+            let ok = model.workspacePublications.filter {
+                $0.status == .needsReview && (scopePostIDs.isEmpty || scopePostIDs.contains($0.uuid)) && !$0.hasErrors(model: model)
+            }
+            for p in ok {
+                p.status = .approved
+            }
             try? model.context.save()
             return "Approved \(ok.count) posts without problems."
         case "publish_approved_posts":
-            let ok = model.workspacePublications.filter { $0.status == .approved }
+            let ok = model.workspacePublications.filter {
+                $0.status == .approved && (scopePostIDs.isEmpty || scopePostIDs.contains($0.uuid))
+            }
             let r = await model.activate(ok)
             return "Scheduled \(r.sent) approved posts." + (r.failed.isEmpty ? "" : " Problems: " + r.failed.joined(separator: "; "))
         default:

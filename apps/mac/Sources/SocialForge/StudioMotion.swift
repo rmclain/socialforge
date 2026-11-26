@@ -131,9 +131,18 @@ extension StudioModel {
                 self?.audioPlayer = p
             }
             let clock = ContinuousClock.now
+            let loadedAudio = try? await player?.currentItem?.asset.load(.duration)
+            let audioDuration = loadedAudio?.seconds ?? 0
             while !Task.isCancelled, let self, self.isPlaying {
-                // The sound is the clock when there is sound.
-                let t = player.map { $0.currentTime().seconds } ?? (startTime + (ContinuousClock.now - clock) / .seconds(1))
+                let wallTime = startTime + (ContinuousClock.now - clock) / .seconds(1)
+                // Use audio clock while audio is still playing; fall back to wall clock when audio is shorter than video.
+                let t: Double
+                if let player, audioDuration.isFinite, wallTime < audioDuration - 0.05 {
+                    let pt = player.currentTime().seconds
+                    t = pt.isFinite && pt >= startTime - 0.1 ? pt : wallTime
+                } else {
+                    t = wallTime
+                }
                 self.time = min(t, duration)
                 if t >= duration { break }
                 try? await Task.sleep(for: .milliseconds(80))
@@ -240,8 +249,7 @@ struct StudioTimeline: View {
         HStack(spacing: Space.md) {
             Button(studio.isPlaying ? "Pause" : "Play", systemImage: studio.isPlaying ? "pause.fill" : "play.fill") { studio.togglePlay() }
                 .labelStyle(.iconOnly).buttonStyle(IconButtonStyle(selected: studio.isPlaying))
-                .keyboardShortcut(.space, modifiers: [])
-                .help("Play the preview (Space)")
+                .help("Play or pause the preview")
             Text("\(Self.clock(studio.time)) / \(Self.clock(duration))").font(DS.mono).foregroundStyle(DS.text2).monospacedDigit()
             Spacer()
             Text("Length").font(DS.small).foregroundStyle(DS.text2)
@@ -293,7 +301,9 @@ struct StudioTimeline: View {
                         let newEnd = min(duration, max(start + 0.2, (dragBase?.end ?? end) + Double(g.translation.width / width) * duration))
                         retime(layer.id, start: start, end: newEnd, duration: duration)
                     }.onEnded { _ in dragBase = nil; studio.endDrag() })
-                    .onHover { inside in if inside { NSCursor.resizeLeftRight.push() } else { NSCursor.pop() } }
+                    .onHover { inside in
+                        if inside { NSCursor.resizeLeftRight.set() } else { NSCursor.arrow.set() }
+                    }
             }
             .frame(width: width, height: rowHeight, alignment: .leading)
         }

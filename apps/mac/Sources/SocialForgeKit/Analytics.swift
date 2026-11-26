@@ -96,9 +96,18 @@ public enum Analytics {
     }
 
     /// RFC 4180 CSV with a header row and CRLF line ends. Dates are ISO 8601 in UTC.
+    /// Neutralizes spreadsheet formula injection (leading =, +, -, @, tab, CR) by prefixing an apostrophe.
     public static func csv(_ records: [PostRecord]) -> String {
-        func field(_ s: String) -> String {
-            s.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" })
+        func sanitize(_ raw: String) -> String {
+            guard let first = raw.first else { return raw }
+            if first == "=" || first == "+" || first == "-" || first == "@" || first == "\t" || first == "\r" {
+                return "'" + raw
+            }
+            return raw
+        }
+        func field(_ raw: String) -> String {
+            let s = sanitize(raw)
+            return s.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" })
                 ? "\"" + s.replacingOccurrences(of: "\"", with: "\"\"") + "\"" : s
         }
         var lines = ["platform,status,scheduled_at,published_at,campaign,account"]

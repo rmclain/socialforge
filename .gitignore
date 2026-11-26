@@ -12,3 +12,7 @@ coverage/
 .data/
 apps/mac/Resources/
 forgedeck-release.json
+repo.xml
+.forgedeck/environments.json
+.forgedeck/issues-done.json
+.forgedeck/memory.json

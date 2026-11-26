@@ -52,6 +52,31 @@ final class StudioModel {
     /// Re-render without an undo step (template values changed).
     func touch() { revision += 1 }
 
+    /// Closes any open design/template and cancels active playback/export (used on workspace switch or Close).
+    func close() {
+        playback?.cancel()
+        playback = nil
+        audioPlayer?.pause()
+        audioPlayer = nil
+        isPlaying = false
+        exportTask?.cancel()
+        exportTask = nil
+        document = nil
+        designID = nil
+        templateID = nil
+        selectedLayer = nil
+        selectedAudio = nil
+        history.removeAll()
+        future.removeAll()
+        dragOrigin = nil
+        exportMessage = nil
+        busy = nil
+        videoProgress = nil
+        sizesProgress = nil
+        lastSizes = nil
+        savedRevision = revision
+    }
+
     var canUndo: Bool { !history.isEmpty }
     var canRedo: Bool { !future.isEmpty }
     var hasUnsavedChanges: Bool { revision != savedRevision }
@@ -319,9 +344,10 @@ final class StudioModel {
             // use that one, so the export still lands in its collection and is reported.
             if added.isEmpty, let hash = try? ContentHash.sha256(of: url), let ws = model.workspaceID,
                let same = ((try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.sha256 == hash }))) ?? []).first(where: { $0.workspaceID == ws }) {
-                try? FileManager.default.removeItem(at: url)
                 added = [same]
             }
+            // Remove staging copy in Exports/ once safely imported into Originals/ to avoid double disk usage.
+            if !added.isEmpty { try? FileManager.default.removeItem(at: url) }
             if let a = added.first {
                 a.title = previewValues["title"] ?? doc.name
                 a.collection = collection
@@ -343,13 +369,19 @@ final class StudioModel {
     /// the set's designs rather than adding another six.
     func generateAllSizes(model: AppModel) async {
         guard let doc = document, let workspaceID = model.workspaceID else { return }
+        if doc.isVideo {
+            exportMessage = "Smart Resize generates still PNGs across image presets. Switch canvas size via Resize › Video and use Export Video for motion designs."
+            return
+        }
         let setName = Self.sizeSetName(for: doc.name)
         let collection = "Sizes · \(setName)"
         let presets = CanvasPreset.all
         exportMessage = nil
         lastSizes = nil
         defer { busy = nil; sizesProgress = nil }
-        let existing = ((try? model.context.fetch(FetchDescriptor<Design>())) ?? []).filter { $0.workspaceID == workspaceID && $0.sizeSet == setName }
+        let existing = ((try? model.context.fetch(FetchDescriptor<Design>(predicate: #Predicate { $0.workspaceID == workspaceID }))) ?? [])
+            .filter { $0.sizeSet == setName }
+        let setID = existing.first?.sizeSetID ?? UUID().uuidString
         var files: [URL] = []
         for (i, preset) in presets.enumerated() {
             busy = "Making \(preset.name), \(i + 1) of \(presets.count)…"
@@ -357,10 +389,12 @@ final class StudioModel {
             let resized = doc.resized(width: preset.width, height: preset.height, name: "\(setName) · \(preset.name)")
             if let old = existing.first(where: { $0.name == resized.name }) {
                 old.json = (try? resized.json()) ?? old.json
+                old.sizeSetID = setID
                 old.updatedAt = .now
             } else {
                 let d = Design(workspaceID: workspaceID, document: resized)
                 d.sizeSet = setName
+                d.sizeSetID = setID
                 model.context.insert(d)
             }
             if let a = await export(model: model, document: resized, suffix: "-\(preset.id)", collection: collection) {

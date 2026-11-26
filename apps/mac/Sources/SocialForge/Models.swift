@@ -4,6 +4,9 @@ import SocialForgeKit
 
 // Every record carries the id of the workspace it belongs to, so a workspace
 // is a clean boundary: switching shows only its media, posts, and kits.
+// All fields added after Schema v1 carry default values or are Optional so
+// SwiftData performs automatic non-destructive lightweight migration for
+// existing user libraries.
 
 @Model
 final class Workspace {
@@ -19,6 +22,7 @@ final class Workspace {
     }
 
     var initial: String { name.first.map { String($0).uppercased() } ?? "?" }
+    var safeColorHex: UInt32 { UInt32(bitPattern: Int32(truncatingIfNeeded: colorHex)) & 0xFFFFFF }
 }
 
 @Model
@@ -48,6 +52,10 @@ final class MediaAsset {
     /// A named group of media, like "Winter Collection".
     var collection: String = ""
     var campaignID: UUID?
+    /// Structured provenance JSON for AI-generated or externally produced assets.
+    var provenanceJSON: Data = Data()
+    /// Soft-archive flag for recoverable removal before moving to Trash.
+    var isArchived: Bool = false
 
     init(workspaceID: UUID, filename: String, storedPath: String, sourcePath: String, sha256: String, bytes: Int) {
         self.workspaceID = workspaceID
@@ -59,6 +67,7 @@ final class MediaAsset {
     }
 
     var storedURL: URL { URL(fileURLWithPath: storedPath) }
+    var fileExists: Bool { FileManager.default.fileExists(atPath: storedPath) }
     var dimensions: String { width > 0 ? "\(width) × \(height)" : "—" }
     var imageFacts: ImageFacts { ImageFacts(width: width, height: height, bytes: bytes, format: format) }
 }
@@ -94,7 +103,24 @@ final class MediaVariant {
 
 /// The lifecycle of one platform post.
 enum PublicationStatus: String, CaseIterable, Codable {
-    case draft, needsReview, approved, scheduled, preparing, publishing, published, failed, paused, canceled
+    case draft
+    case needsReview
+    case approved
+    case scheduled
+    case preparing
+    case uploading
+    case awaitingProcessing
+    case publishing
+    case verifying
+    case published
+    case retryScheduled
+    case authRequired
+    case actionRequired
+    case outcomeUnknown
+    case failed
+    case paused
+    case canceled
+    case manualRequired
 
     var title: String {
         switch self {
@@ -102,12 +128,20 @@ enum PublicationStatus: String, CaseIterable, Codable {
         case .needsReview: "Needs Review"
         case .approved: "Approved"
         case .scheduled: "Scheduled"
-        case .preparing: "Preparing"
+        case .preparing: "Preparing Media"
+        case .uploading: "Uploading"
+        case .awaitingProcessing: "Awaiting Processing"
         case .publishing: "Publishing"
+        case .verifying: "Verifying"
         case .published: "Published"
+        case .retryScheduled: "Retry Scheduled"
+        case .authRequired: "Auth Required"
+        case .actionRequired: "Action Required"
+        case .outcomeUnknown: "Outcome Unknown"
         case .failed: "Failed"
         case .paused: "Paused"
         case .canceled: "Canceled"
+        case .manualRequired: "Manual Publishing"
         }
     }
 
@@ -117,24 +151,77 @@ enum PublicationStatus: String, CaseIterable, Codable {
         case .needsReview: "eye"
         case .approved: "checkmark.circle"
         case .scheduled: "clock"
-        case .preparing, .publishing: "arrow.up.circle"
+        case .preparing, .uploading, .awaitingProcessing, .publishing, .verifying: "arrow.up.circle"
         case .published: "checkmark.seal.fill"
+        case .retryScheduled: "arrow.clockwise.circle"
+        case .authRequired: "key.slash"
+        case .actionRequired: "exclamationmark.circle"
+        case .outcomeUnknown: "questionmark.diamond.fill"
         case .failed: "exclamationmark.triangle.fill"
         case .paused: "pause.circle"
         case .canceled: "xmark.circle"
+        case .manualRequired: "hand.raised.circle"
         }
     }
 
-    /// Editable in the app. Once the service has it, changes go through the service.
+    /// Editable in the app without external coordination.
     var isLocal: Bool { [.draft, .needsReview, .approved].contains(self) }
 
-    /// The server's status names.
+    /// Currently executing an external publish pipeline step.
+    var isActivePublishing: Bool { [.preparing, .uploading, .awaitingProcessing, .publishing, .verifying].contains(self) }
+
+    /// Queued for automatic publishing (first try or scheduled retry).
+    var isQueuedForPublish: Bool { self == .scheduled || self == .retryScheduled }
+
+    /// Requires user inspection or intervention.
+    var needsAttention: Bool {
+        [.needsReview, .failed, .authRequired, .actionRequired, .outcomeUnknown, .manualRequired].contains(self)
+    }
+
+    /// Maps backend server status strings to local PublicationStatus.
     init(server: String) {
-        self = PublicationStatus(rawValue: server) ?? (server == "queued" ? .scheduled : .failed)
+        if let exact = PublicationStatus(rawValue: server) {
+            self = exact
+        } else if server == "queued" {
+            self = .scheduled
+        } else {
+            self = .failed
+        }
     }
 }
 
-/// One post for one platform and account: the definition. Attempts live on the server.
+/// Explicit publishing owner for each scheduled publication.
+enum PublishOwner: String, CaseIterable, Codable {
+    case mac = "mac"
+    case service = "service"
+    case manual = "manual"
+
+    var label: String {
+        switch self {
+        case .mac: "This Mac"
+        case .service: "Publishing Service"
+        case .manual: "Manual Export"
+        }
+    }
+}
+
+/// Missed-post policy when a Mac wakes after a scheduled time passed.
+enum MissedPostPolicy: String, CaseIterable, Codable, Identifiable {
+    case publishWhenAvailable
+    case skipForReview
+    case rescheduleInWindow
+
+    var id: String { rawValue }
+    var title: String {
+        switch self {
+        case .publishWhenAvailable: "Publish when available (mark late)"
+        case .skipForReview: "Skip and return to Needs Review"
+        case .rescheduleInWindow: "Reschedule to next valid slot"
+        }
+    }
+}
+
+/// One post for one platform and account.
 @Model
 final class Publication {
     /// Also the clientId the server stores, so sync can match rows.
@@ -147,6 +234,7 @@ final class Publication {
     var accountName: String = ""
     var boardID: String = ""
     var boardName: String = ""
+    var boardSectionID: String = ""
     var title: String = ""
     var desc: String = ""
     var link: String = ""
@@ -154,11 +242,16 @@ final class Publication {
     var scheduledAt: Date
     var timeZoneID: String
     var statusRaw: String = PublicationStatus.needsReview.rawValue
+    /// Explicit persisted publishing owner: "mac", "service", or "manual".
+    var publishOwnerRaw: String = PublishOwner.mac.rawValue
     var serverID: String?
     var providerPostID: String?
+    /// Persisted remote upload/container ID so processing can resume after crash.
+    var containerID: String?
     /// When a retry is due (on-Mac publishing). Nil means "as scheduled".
     var nextAttemptAt: Date?
     var firstTriedAt: Date?
+    var publishedAt: Date?
     var publishedURL: String?
     var lastError: String?
     var attempts: Int = 0
@@ -166,6 +259,14 @@ final class Publication {
     var campaignID: UUID?
     /// The canonical post this platform version belongs to (Composer).
     var contentItemID: UUID?
+    /// Additional asset UUIDs for carousels / multi-photo posts.
+    var extraAssetIDs: [UUID] = []
+    /// Provider-specific disclosure/visibility metadata JSON (e.g. YouTube, TikTok).
+    var metadataJSON: Data = Data()
+    /// Inbound MCP request ID that created this post (prevents crash-recovery duplicates).
+    var agentRequestID: String?
+    /// Fingerprint of content/media/destination at approval time so edits invalidate approval.
+    var approvedFingerprint: String = ""
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
 
@@ -177,14 +278,45 @@ final class Publication {
 
     var status: PublicationStatus {
         get { PublicationStatus(rawValue: statusRaw) ?? .draft }
-        set { statusRaw = newValue.rawValue; updatedAt = .now }
+        set {
+            statusRaw = newValue.rawValue
+            if newValue == .approved { approvedFingerprint = contentFingerprint }
+            updatedAt = .now
+        }
+    }
+
+    var publishOwner: PublishOwner {
+        get { PublishOwner(rawValue: publishOwnerRaw) ?? (serverID != nil ? .service : .mac) }
+        set { publishOwnerRaw = newValue.rawValue; updatedAt = .now }
+    }
+
+    var metadata: [String: String] {
+        get { (try? JSONDecoder().decode([String: String].self, from: metadataJSON)) ?? [:] }
+        set { metadataJSON = (try? JSONEncoder().encode(newValue)) ?? Data(); updatedAt = .now }
+    }
+
+    /// Stable fingerprint of editable content/media/destination/disclosures.
+    var contentFingerprint: String {
+        let extras = extraAssetIDs.map(\.uuidString).joined(separator: ",")
+        let meta = String(data: metadataJSON, encoding: .utf8) ?? ""
+        return [platform, accountID, boardID, boardSectionID, title, desc, link, altText,
+                assetID?.uuidString ?? "", variantID?.uuidString ?? "", extras, meta].joined(separator: "|")
+    }
+
+    /// Invalidates approval back to `.needsReview` if an approved post's content, media, destination, or disclosures changed.
+    func invalidateApprovalIfChanged() {
+        guard status == .approved, !approvedFingerprint.isEmpty, approvedFingerprint != contentFingerprint else { return }
+        status = .needsReview
     }
 
     /// Stable per post: a resubmission after a timeout creates no second post.
     var idempotencyKey: String { "sf-\(uuid.uuidString.lowercased())" }
 }
 
-/// A connected account, as last reported by the publishing service.
+/// A connected account, associated with one workspace.
+/// Provider credentials may be shared across multiple workspaces via `credentialProfileID`
+/// without duplicating tokens, and disconnecting in one workspace does not revoke tokens
+/// still referenced by other workspaces.
 @Model
 final class SocialAccount {
     var serverID: String
@@ -196,9 +328,17 @@ final class SocialAccount {
     var scopes: [String] = []
     var tokenExpiresAt: Date?
     var lastPublishedAt: Date?
+    var lastVerifiedAt: Date?
+    var lastError: String?
     var isMock: Bool = false
     /// "mac" for accounts this Mac connected itself (tokens in the Keychain), "service" for the optional publishing service.
     var source: String = "service"
+    /// Optional shared provider credential profile ID (allows one OAuth identity across multiple brand workspaces).
+    var credentialProfileID: String = ""
+    /// Dynamic capability metadata: e.g. "business", "creator", "page", "organization", "channel".
+    var accountType: String = ""
+    /// Authentication mode / environment: e.g. "facebook_login", "instagram_login", "oauth2_pkce", "sandbox", "production".
+    var authMode: String = ""
     var refreshedAt: Date = Date.now
 
     init(serverID: String, workspaceID: UUID, platform: String, name: String, status: String) {
@@ -210,9 +350,14 @@ final class SocialAccount {
     }
 
     /// Keychain item that holds this account's access token (on-Mac accounts only).
-    var tokenKey: String { "token.\(serverID)" }
+    /// Uses shared credentialProfileID when set, otherwise falls back to legacy token.<serverID>.
+    var tokenKey: String {
+        credentialProfileID.isEmpty ? "token.\(serverID)" : "cred.\(credentialProfileID)"
+    }
 
-    /// The platform's own id (Page, Instagram account, Threads user) for accounts this Mac connected.
+    var refreshTokenKey: String { tokenKey + ".refresh" }
+
+    /// The platform's own id (Page, Instagram account, Threads user, LinkedIn URN, etc.) for accounts this Mac connected.
     var platformID: String {
         let prefix = "mac-\(platform)-"
         return serverID.hasPrefix(prefix) ? String(serverID.dropFirst(prefix.count)) : serverID
@@ -220,6 +365,17 @@ final class SocialAccount {
 
     var capabilities: [AccountCapability] {
         Capabilities.forAccount(platform: platform, grantedScopes: Set(scopes), status: status)
+    }
+
+    var connectionStatus: ConnectionStatus {
+        let missing = Array(Set(capabilities.flatMap(\.missingScopes))).sorted()
+        let hasCred = isMock || source == "service" || (Keychain.read(tokenKey)?.isEmpty == false)
+        let hasLimitations = authMode == "sandbox" || (platform == "instagram" && PublicMediaSettings.config() == nil)
+            || (platform == "threads" && PublicMediaSettings.config() == nil)
+        return ConnectionStatus.fromAccount(
+            status: status, tokenExpiresAt: tokenExpiresAt, missingPermissions: missing,
+            hasCredential: hasCred, isMock: isMock, hasLimitations: hasLimitations
+        )
     }
 }
 
@@ -236,6 +392,11 @@ final class BrandKit {
     var ctas: [String] = []
     var hashtags: [String] = []
     var avoid: String = ""
+    var preferredTerms: [String] = []
+    var website: String = ""
+    var defaultLink: String = ""
+    var defaultAIProviderID: String = ""
+    var isPrimary: Bool = false
     /// Logo file in the library (PNG with transparency works best).
     var logoPath: String = ""
     var imageStyle: String = ""
@@ -249,8 +410,12 @@ final class BrandKit {
     }
 
     var style: BrandStyle {
-        BrandStyle(palette: colors.map { RGBA(hex: UInt32($0)) }, headlineFont: headlineFont, bodyFont: bodyFont,
-                   logoPath: logoPath.isEmpty ? nil : logoPath)
+        BrandStyle(
+            palette: colors.map { RGBA(hex: UInt32(bitPattern: Int32(truncatingIfNeeded: $0)) & 0xFFFFFF) },
+            headlineFont: headlineFont,
+            bodyFont: bodyFont,
+            logoPath: logoPath.isEmpty ? nil : logoPath
+        )
     }
 
     var voiceForAI: BrandVoice {
@@ -293,6 +458,11 @@ final class Campaign {
     var utmSource: String = "pinterest"
     var utmMedium: String = "social"
     var utmCampaign: String = ""
+    var utmContent: String = ""
+    var utmTerm: String = ""
+    /// When true, each platform uses its own name as utm_source (e.g. pinterest, instagram, linkedin).
+    var perPlatformUTMSource: Bool = true
+    var accountIDs: [String] = []
     var notes: String = ""
     var templateID: UUID?
     var createdAt: Date = Date.now
@@ -316,6 +486,7 @@ final class ContentItem {
     var altText: String = ""
     var hashtags: [String] = []
     var assetID: UUID?
+    var extraAssetIDs: [UUID] = []
     var campaignID: UUID?
     var createdAt: Date = Date.now
     var updatedAt: Date = Date.now
@@ -323,20 +494,27 @@ final class ContentItem {
     init(workspaceID: UUID) { self.workspaceID = workspaceID }
 }
 
-/// One AI request: copy, an image batch, or a command plan. Kept for history and token usage.
+/// One AI request: copy, an image batch, video/music generation, or a command plan.
 @Model
 final class AIJob {
     var uuid: UUID = UUID()
     var workspaceID: UUID
     var provider: String
+    var modelName: String = ""
+    var workflowName: String = ""
+    var serverURL: String = ""
+    var remoteJobID: String = ""
     var kind: String
     var prompt: String
+    var negativePrompt: String = ""
     var status: String = "running"
     var detail: String = ""
     var outputAssetIDs: [UUID] = []
     var seed: Int = 0
     var inputTokens: Int = 0
     var outputTokens: Int = 0
+    var reasoningTokens: Int = 0
+    var cachedTokens: Int = 0
     var progress: Double = 0
     var createdAt: Date = Date.now
     var finishedAt: Date?
@@ -371,7 +549,7 @@ final class Automation {
     var workspaceID: UUID
     var name: String
     var isEnabled: Bool = false
-    /// folder, manual, weekly
+    /// folder, manual, weekly, tag
     var trigger: String = "folder"
     var folderPath: String = ""
     var weekday: Int = 2
@@ -379,13 +557,17 @@ final class Automation {
     var presetID: String = ""
     var templateID: UUID?
     var generateCopy: Bool = false
+    var platform: String = "pinterest"
     var accountID: String = ""
     var boardID: String = ""
     var boardName: String = ""
+    var campaignID: UUID?
     var everyDays: Int = 1
     var postHour: Int = 9
     var postMinute: Int = 0
     var tag: String = ""
+    /// Persisted file/asset fingerprints already processed so folders/tags are never reprocessed.
+    var processedFingerprints: [String] = []
     var lastRunAt: Date?
     var createdAt: Date = Date.now
 
@@ -419,9 +601,10 @@ final class Design {
     var name: String
     var json: Data
     var updatedAt: Date = Date.now
-    /// For a design made by Generate all sizes: the name of the design it was made from.
-    /// The Studio gallery shows a set as one row. Empty for every other design.
+    /// Human-readable name of the size set this design belongs to.
     var sizeSet: String = ""
+    /// Stable UUID grouping key for generated size sets (prevents name collisions).
+    var sizeSetID: String = ""
 
     init(workspaceID: UUID, document: CreativeDocument) {
         self.workspaceID = workspaceID
@@ -437,13 +620,20 @@ final class Design {
 final class PublishAttempt {
     var publicationID: UUID
     var attempt: Int
+    var idempotencyKey: String = ""
+    var provider: String = ""
+    var accountID: String = ""
+    var route: String = "mac"
+    var operation: String = "publish"
+    var containerID: String?
     var startedAt: Date = Date.now
     var finishedAt: Date?
-    /// success, reconciled, retryable, uncertain, auth, permanent
+    /// success, reconciled, retryable, rateLimited, uncertain, auth, permission, permanent
     var outcome: String?
     var httpStatus: Int?
     var requestID: String?
     var error: String?
+    var nextRetryAt: Date?
 
     init(publicationID: UUID, attempt: Int) {
         self.publicationID = publicationID
@@ -451,22 +641,26 @@ final class PublishAttempt {
     }
 }
 
-/// What happened, for Home's activity list.
+/// What happened, for Home's activity list and Operations log.
 @Model
 final class ActivityEntry {
     var workspaceID: UUID
+    var category: String = "general"
     var text: String
     var symbol: String
     var at: Date = Date.now
 
-    init(workspaceID: UUID, text: String, symbol: String) {
+    init(workspaceID: UUID, text: String, symbol: String, category: String = "general") {
         self.workspaceID = workspaceID
+        self.category = category
         self.text = text
         self.symbol = symbol
     }
 }
 
 enum AppSchema {
+    static let currentVersion = "2.0.0"
+
     static let models: [any PersistentModel.Type] = [
         Workspace.self, MediaAsset.self, MediaVariant.self, Publication.self,
         SocialAccount.self, BrandKit.self, Design.self, ActivityEntry.self, PublishAttempt.self,

@@ -32,6 +32,7 @@ printf '{"commit_sha":"%s","version":"%s","build_id":"%s","built_at":"%s"}\n' \
   "$(git rev-parse HEAD)" "$tag" "$build" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > dist/forgedeck-release.json
 
 notes_file=$(mktemp)
+trap 'rm -f "$notes_file"' EXIT
 if [[ -n "$notes" ]]; then
   cp "$notes" "$notes_file"
 else
@@ -44,7 +45,11 @@ else
     echo "Unzip, drag SocialForge.app to Applications, and open it. Copies that are already installed offer the update themselves."
   } > "$notes_file"
 fi
-gh release create "$tag" "$zip" --repo "$repo" --target main --title "SocialForge $version" --notes-file "$notes_file" "${draft[@]}"
-git tag -f "$tag" HEAD >/dev/null
-tools/publish-site.sh
-echo "released $tag on $repo"
+gh release create "$tag" "$zip" --repo "$repo" --target "$(git rev-parse HEAD)" --title "SocialForge $version" --notes-file "$notes_file" "${draft[@]}"
+if [[ ${#draft[@]} -eq 0 ]]; then
+  git tag -f "$tag" HEAD >/dev/null
+  tools/publish-site.sh
+  echo "released $tag on $repo"
+else
+  echo "created draft release $tag on $repo (site not published for draft)"
+fi

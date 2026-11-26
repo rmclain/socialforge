@@ -6,7 +6,7 @@ import Testing
 struct AIProviderTests {
     func config(_ id: AIProviderID, _ base: URL) -> AIProviderConfig {
         var c = AIProviderConfig.defaults(for: id)
-        c.baseURL = base.absoluteString
+        c.baseURL = base.absoluteString.replacingOccurrences(of: "http://", with: "https://")
         return c
     }
 
@@ -124,6 +124,74 @@ struct AIProviderTests {
         #expect(body["size"] as? String == "1024x1536")
         #expect(body["model"] as? String == "gpt-image-1")
         #expect(body["response_format"] == nil)
+    }
+
+    @Test func dallE3SizingAndResponseFormat() async throws {
+        let png = Data([0x89, 0x50, 0x4E, 0x47])
+        let stub = HTTPStub.make { _, _ in
+            (200, json(#"{"data":[{"b64_json":"\#(png.base64EncodedString())"}]}"#))
+        }
+        var c = config(.openai, stub.base)
+        c.imageModel = "dall-e-3"
+        let p = try #require(makeImageProvider(c, apiKey: "k", session: stub.session))
+        _ = try await p.generate(prompt: "a mug", width: 1600, height: 900, count: 4)
+        let body = jsonObject(stub.log.all[0].body)
+        #expect(body["size"] as? String == "1792x1024")
+        #expect(body["n"] as? Int == 1)
+        #expect(body["response_format"] as? String == "b64_json")
+    }
+
+    @Test func endpointTransportAnd403DistinctFrom401() async throws {
+        #expect(aiEndpointTransportProblem("http://api.openai.com") != nil)
+        #expect(aiEndpointTransportProblem("https://api.openai.com") == nil)
+        #expect(aiEndpointTransportProblem("http://127.0.0.1:11434") == nil)
+        #expect(aiEndpointTransportProblem("http://192.168.1.50:1234") == nil)
+
+        let stub = HTTPStub.make { _, _ in
+            (403, json(#"{"error":{"message":"Quota exceeded for sk-secretkey123456"}}"#))
+        }
+        let p = try #require(makeTextProvider(config(.openai, stub.base), apiKey: "sk-secretkey123456", session: stub.session))
+        do {
+            _ = try await p.complete(system: "s", user: "u", maxTokens: 10)
+            Issue.record("expected 403")
+        } catch {
+            guard case .http(403, let msg) = error else { Issue.record("wrong error \(error)"); return }
+            #expect(msg.contains("Permission or billing denied"))
+            #expect(!msg.contains("sk-secretkey123456"))
+        }
+    }
+
+    @Test func modelDiscoveryAcrossProviders() async throws {
+        let stub = HTTPStub.make { req, _ in
+            switch req.url?.path {
+            case "/v1/models": (200, json(#"{"data":[{"id":"gpt-5-mini"},{"id":"gpt-5"}]}"#))
+            case "/api/tags": (200, json(#"{"models":[{"name":"llama3.2"},{"name":"qwen2.5"}]}"#))
+            case "/v1beta/models": (200, json(#"{"models":[{"name":"models/gemini-2.5-flash","supportedGenerationMethods":["generateContent"]},{"name":"models/embedding-001","supportedGenerationMethods":["embedContent"]}]}"#))
+            default: (404, Data())
+            }
+        }
+        let oa = try await discoverAIModels(config(.openai, stub.base), apiKey: "k", session: stub.session)
+        #expect(oa == ["gpt-5", "gpt-5-mini"])
+        let gem = try await discoverAIModels(config(.gemini, stub.base), apiKey: "gk", session: stub.session)
+        #expect(gem == ["gemini-2.5-flash"])
+
+        // Ollama fallback when /v1/models 404s.
+        let ollamaStub = HTTPStub.make { req, _ in
+            req.url?.path == "/api/tags"
+                ? (200, json(#"{"models":[{"name":"llama3.2"},{"name":"mistral"}]}"#))
+                : (404, Data())
+        }
+        let ollama = try await discoverAIModels(config(.openaiCompatible, ollamaStub.base), apiKey: nil, session: ollamaStub.session)
+        #expect(ollama == ["llama3.2", "mistral"])
+    }
+
+    @Test func instagramAndTikTokCaptionLimitsEnforced() throws {
+        let longText = Array(repeating: "captionword", count: 300).joined(separator: " ")
+        let raw = #"{"title":"","description":"\#(longText)","alt_text":"","hashtags":[]}"#
+        let ig = try PostCopyGenerator.parse(raw, platform: "instagram")
+        #expect(ig.description.count <= 2200)
+        let tt = try PostCopyGenerator.parse(raw, platform: "tiktok")
+        #expect(tt.description.count <= 2200)
     }
 }
 

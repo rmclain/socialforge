@@ -86,6 +86,63 @@ public struct ValidationIssue: Sendable, Equatable, Hashable {
     }
 }
 
+/// Explicit platform integration maturity & availability level.
+public enum PlatformSupportLevel: String, Sendable, Codable, CaseIterable {
+    case notImplemented
+    case exportOnly
+    case implementedTested
+    case connectedAccount
+    case liveVerified
+    case approvalRestricted
+    case productionReady
+
+    public var label: String {
+        switch self {
+        case .notImplemented: "Not implemented"
+        case .exportOnly: "Export only"
+        case .implementedTested: "Built · automated tests"
+        case .connectedAccount: "Connected"
+        case .liveVerified: "Live verified"
+        case .approvalRestricted: "Restricted by provider approval"
+        case .productionReady: "Ready for production"
+        }
+    }
+}
+
+/// X (Twitter) weighted character length: URLs count as 23 chars via t.co,
+/// CJK / fullwidth / emoji codepoints outside standard Latin blocks count as 2.
+public enum XTextLength {
+    private static let urlRegex = try? NSRegularExpression(pattern: #"https?://[^\s]+"#, options: [.caseInsensitive])
+
+    public static func weightedCount(_ text: String) -> Int {
+        guard !text.isEmpty else { return 0 }
+        let ns = text as NSString
+        var replaced = text
+        var urlCount = 0
+        if let regex = urlRegex {
+            let matches = regex.matches(in: text, range: NSRange(location: 0, length: ns.length))
+            urlCount = matches.count
+            for m in matches.reversed() {
+                if let range = Range(m.range, in: replaced) {
+                    replaced.removeSubrange(range)
+                }
+            }
+        }
+        var weight = urlCount * 23
+        for scalar in replaced.unicodeScalars {
+            let v = scalar.value
+            // Standard Latin, punctuation, general symbols weight 1; CJK / emoji / wide glyphs weight 2.
+            let isWeightedOne =
+                (0x0000...0x10FF).contains(v) ||
+                (0x2000...0x200D).contains(v) ||
+                (0x2010...0x201F).contains(v) ||
+                (0x2032...0x2037).contains(v)
+            weight += isWeightedOne ? 1 : 2
+        }
+        return weight
+    }
+}
+
 /// The fields of one platform post that validation looks at.
 public struct PostDraft: Sendable, Equatable {
     public var platform: String
@@ -95,11 +152,15 @@ public struct PostDraft: Sendable, Equatable {
     public var altText: String
     public var destinationID: String?
     public var image: ImageFacts?
+    public var isVideo: Bool
+    public var hasPublicMediaHost: Bool?
 
     public init(platform: String, title: String = "", description: String = "", link: String = "",
-                altText: String = "", destinationID: String? = nil, image: ImageFacts? = nil) {
+                altText: String = "", destinationID: String? = nil, image: ImageFacts? = nil,
+                isVideo: Bool = false, hasPublicMediaHost: Bool? = nil) {
         self.platform = platform; self.title = title; self.description = description; self.link = link
         self.altText = altText; self.destinationID = destinationID; self.image = image
+        self.isVideo = isVideo; self.hasPublicMediaHost = hasPublicMediaHost
     }
 }
 
@@ -123,17 +184,19 @@ public enum PostValidator {
         if !spec.isAvailable {
             issues.append(ValidationIssue(.error, "platform", "\(spec.name) publishing is not available yet."))
         }
-        func checkText(_ key: String, _ label: String, _ value: String) {
+        func checkText(_ key: String, _ label: String, _ value: String, weighted: Bool = false) {
             guard let rule = spec.text[key] else { return }
             if rule.required && value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                 issues.append(ValidationIssue(.error, key, "\(label) is required."))
             }
-            if value.count > rule.max {
+            let length = weighted ? XTextLength.weightedCount(value) : value.count
+            if length > rule.max {
                 issues.append(ValidationIssue(rule.enforced ? .error : .warning, key,
-                                              "\(label) is \(value.count) characters; \(spec.name) allows \(rule.max)."))
+                                              "\(label) is \(length) characters; \(spec.name) allows \(rule.max)."))
             }
         }
-        if post.platform == "pinterest" {
+        switch post.platform {
+        case "pinterest":
             checkText("title", "Title", post.title)
             checkText("description", "Description", post.description)
             checkText("alt_text", "Alt text", post.altText)
@@ -151,6 +214,41 @@ public enum PostValidator {
             }
             if post.altText.isEmpty {
                 issues.append(ValidationIssue(.info, "alt_text", "Add alt text so people using screen readers know what the image shows."))
+            }
+        case "facebook":
+            checkText("message", "Message", post.description.isEmpty ? post.title : post.description)
+            if !post.link.isEmpty && !MetadataMatcher.isWebURL(post.link) {
+                issues.append(ValidationIssue(.error, "link", "The link must start with http:// or https://."))
+            }
+        case "instagram":
+            checkText("caption", "Caption", post.description.isEmpty ? post.title : post.description)
+            if post.image != nil && !post.isVideo && post.hasPublicMediaHost == false {
+                issues.append(ValidationIssue(.error, "storage", "Instagram image posts require configured public media storage (S3/R2)."))
+            }
+        case "threads":
+            checkText("text", "Text", post.description.isEmpty ? post.title : post.description)
+            if (post.image != nil || post.isVideo) && post.hasPublicMediaHost == false {
+                issues.append(ValidationIssue(.error, "storage", "Threads photo and video posts require configured public media storage (S3/R2)."))
+            }
+        case "linkedin":
+            checkText("commentary", "Commentary", post.description.isEmpty ? post.title : post.description)
+            if !post.link.isEmpty && !MetadataMatcher.isWebURL(post.link) {
+                issues.append(ValidationIssue(.error, "link", "The link must start with http:// or https://."))
+            }
+        case "x":
+            checkText("text", "Post text", post.description.isEmpty ? post.title : post.description, weighted: true)
+            if !post.link.isEmpty && !MetadataMatcher.isWebURL(post.link) {
+                issues.append(ValidationIssue(.error, "link", "The link must start with http:// or https://."))
+            }
+        case "tiktok":
+            checkText("caption", "Caption", post.description.isEmpty ? post.title : post.description)
+        case "youtube":
+            checkText("title", "Title", post.title)
+            checkText("description", "Description", post.description)
+        default:
+            for key in spec.text.keys.sorted() {
+                let value = key == "title" ? post.title : post.description
+                checkText(key, key.capitalized, value)
             }
         }
         if let img = post.image {
@@ -182,7 +280,7 @@ public enum PostValidator {
     /// Checks a video against a platform's rules. Errors are limits the platform enforces;
     /// a size that differs from the recommended one is only information.
     public static func validateVideo(platform: String, seconds: Double, width: Int, height: Int, bytes: Int, format: String,
-                                     fps: Double? = nil) -> [ValidationIssue] {
+                                     fps: Double? = nil, requireShortsAspect: Bool = false) -> [ValidationIssue] {
         guard let spec = PlatformRegistry.spec(platform) else {
             return [ValidationIssue(.error, "platform", "Unknown platform “\(platform)”.")]
         }
@@ -204,6 +302,9 @@ public enum PostValidator {
         if let fps {
             if let max = rule.maxFps, fps > max + 0.01 { issues.append(ValidationIssue(.error, "video", "\(Self.number(fps)) fps is above \(spec.name)'s \(Self.number(max)) fps.")) }
             if let min = rule.minFps, fps < min - 0.01 { issues.append(ValidationIssue(.error, "video", "\(Self.number(fps)) fps is below \(spec.name)'s \(Self.number(min)) fps.")) }
+        }
+        if platform == "youtube" && requireShortsAspect && width > height {
+            issues.append(ValidationIssue(.error, "video", "YouTube Shorts must be square or vertical (width ≤ height). This video is \(width) × \(height)."))
         }
         let rec = rule.recommended
         let want = Double(rec.width) / Double(rec.height)
@@ -274,18 +375,39 @@ public enum Capabilities {
 // MARK: - What SocialForge does for each platform today
 
 public enum PlatformStatus {
-    /// One honest line per platform, for Settings and Accounts.
+    /// One honest line per platform, for Connections and Settings.
     public static func summary(_ spec: PlatformSpec) -> String {
         switch spec.platform {
-        case "pinterest": "Posts from this Mac. Connect your Pinterest app below."
-        case "facebook": "Posts from this Mac (not yet verified live): text, photos, and Reels to your Pages. Connect your Meta app below."
-        case "instagram": "Posts from this Mac (not yet verified live): Reels upload from this Mac; photos need public media storage. Connect your Meta app below."
-        case "threads": "Posts from this Mac (not yet verified live): text posts; photos and videos need public media storage. Connect your Threads app below."
-        case "linkedin", "x": "Drafts only: SocialForge writes and sizes the post; posting is not built yet."
-        default: spec.video != nil
-            ? "Export only: SocialForge makes the video at the right size; you upload it."
-            : "Export only: SocialForge makes the post at the right size; you upload it."
+        case "pinterest":
+            "Posts from this Mac (not yet verified live): image & video Pins with board discovery and refresh tokens."
+        case "facebook":
+            "Posts from this Mac (not yet verified live): text, photos, multi-photos, links, and Reels to managed Pages."
+        case "instagram":
+            "Posts from this Mac (not yet verified live): Reels upload directly; photos & carousels require public media storage."
+        case "threads":
+            "Posts from this Mac (not yet verified live): text posts directly; photos, videos & carousels require public media storage."
+        case "linkedin":
+            "Posts from this Mac (not yet verified live): personal profiles (Share on LinkedIn) and company pages (Community Management API approval)."
+        case "x":
+            "Posts from this Mac (not yet verified live): OAuth 2.0 PKCE + v2 text and chunked media upload (subject to X API tier limits)."
+        case "tiktok":
+            "Posts from this Mac (not yet verified live): Content Posting API v2 (Creator Inbox drafts or audited Direct Post) plus manual export fallback."
+        case "youtube":
+            "Posts from this Mac (not yet verified live): YouTube Data API v3 resumable video & Shorts uploads with channel selection and disclosures."
+        default:
+            spec.video != nil
+                ? "Export only: SocialForge makes the video at the right size; you upload it."
+                : "Export only: SocialForge makes the post at the right size; you upload it."
         }
+    }
+
+    public static func supportLevel(_ spec: PlatformSpec, connected: Bool = false, approvalRestricted: Bool = false) -> PlatformSupportLevel {
+        guard spec.isAvailable else { return spec.video != nil ? .exportOnly : .notImplemented }
+        if spec.liveVerified && connected && !approvalRestricted { return .productionReady }
+        if spec.liveVerified { return .liveVerified }
+        if approvalRestricted { return .approvalRestricted }
+        if connected { return .connectedAccount }
+        return .implementedTested
     }
 
     public static func notBuiltReason(_ spec: PlatformSpec) -> String {

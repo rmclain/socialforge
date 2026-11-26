@@ -66,7 +66,9 @@ struct MetaPublishingTests {
         #expect(req.url!.path().hasPrefix("/media/socialforge/"))
         #expect(req.value(forHTTPHeaderField: "Authorization")?.hasPrefix("AWS4-HMAC-SHA256 Credential=AK/") == true)
         #expect(req.value(forHTTPHeaderField: "x-amz-content-sha256")?.count == 64)
-        #expect(out.url.absoluteString.hasPrefix("https://pub.example.com/socialforge/") && out.key.hasSuffix("a b.jpg"))
+        #expect(out.url.absoluteString.hasPrefix("https://pub.example.com/socialforge/") && out.key.hasSuffix(".jpg"))
+        // Opaque key must never leak original filename.
+        #expect(!out.key.contains("a b"))
     }
 
     @Test func s3RefusalIsExplained() async {
@@ -158,9 +160,10 @@ struct MetaPublishingTests {
     @Test func graphErrorsMapToActions() {
         func err(_ code: Int, _ sub: Int = 0) -> Data { jdata(["error": ["message": "m", "code": code, "error_subcode": sub, "fbtrace_id": "T"]]) }
         #expect(Meta.failure(status: 400, body: err(190), service: "Instagram").kind == .auth)
-        #expect(Meta.failure(status: 403, body: err(200), service: "Facebook").kind == .auth)
-        #expect(Meta.failure(status: 400, body: err(4), service: "Facebook").kind == .retryable)
-        #expect(Meta.failure(status: 400, body: err(9, 2207042), service: "Instagram").message.contains("24-hour"))
+        #expect(Meta.failure(status: 403, body: err(200), service: "Facebook").kind == .permission)
+        #expect(Meta.failure(status: 400, body: err(4), service: "Facebook").kind == .rateLimited)
+        let igLimit = Meta.failure(status: 400, body: err(9, 2207042), service: "Instagram")
+        #expect(igLimit.kind == .rateLimited && igLimit.message.contains("24-hour") && (igLimit.retryAfter ?? 0) >= 3600)
         #expect(Meta.failure(status: 400, body: err(100), service: "Instagram").kind == .permanent)
         #expect(Meta.failure(status: 400, body: err(100), service: "Instagram").requestID == "T")
         #expect(Meta.failure(status: 503, body: Data(), service: "Threads").kind == .retryable)
@@ -222,10 +225,15 @@ struct MetaPublishingTests {
 
     @Test func redirectParsing() throws {
         let landed = "https://www.facebook.com/connect/login_success.html?code=ABC&state=s1#_=_"
-        #expect(try OAuthRedirect.code(from: landed, state: "s1") == "ABC")
-        #expect(try OAuthRedirect.code(from: "https://example.com/cb?code=XYZ#_&state=s2", state: "s2") == "XYZ")
-        #expect(try OAuthRedirect.code(from: "  RAWCODE#_ ", state: "s") == "RAWCODE")
+        #expect(try OAuthRedirect.code(from: landed, state: "s1", expectedRedirectURI: Meta.desktopRedirect) == "ABC")
+        #expect(try OAuthRedirect.code(from: "https://example.com/cb?code=XYZ&state=s2#_", state: "s2") == "XYZ")
+        // Bare codes and missing state MUST be rejected (CSRF protection).
+        #expect(throws: OAuthRedirect.ParseError.badState) { try OAuthRedirect.code(from: "  RAWCODE#_ ", state: "s") }
+        #expect(throws: OAuthRedirect.ParseError.badState) { try OAuthRedirect.code(from: "https://example.com/cb?code=XYZ", state: "s2") }
         #expect(throws: OAuthRedirect.ParseError.badState) { try OAuthRedirect.code(from: "https://x/?code=a&state=other", state: "s1") }
+        #expect(throws: OAuthRedirect.ParseError.badRedirectURI) {
+            try OAuthRedirect.code(from: "https://evil.example/cb?code=a&state=s1", state: "s1", expectedRedirectURI: Meta.desktopRedirect)
+        }
         #expect(throws: OAuthRedirect.ParseError.denied("Permissions error")) {
             try OAuthRedirect.code(from: "https://x/?error=access_denied&error_description=Permissions%20error&state=s1", state: "s1")
         }

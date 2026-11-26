@@ -21,9 +21,26 @@ struct PublishEngineTests {
 
     @Test func statusClassification() {
         #expect(PublishFailure.kind(forStatus: 503) == .retryable)
-        #expect(PublishFailure.kind(forStatus: 429) == .retryable)
+        #expect(PublishFailure.kind(forStatus: 429) == .rateLimited)
         #expect(PublishFailure.kind(forStatus: 401) == .auth)
+        #expect(PublishFailure.kind(forStatus: 403) == .permission)
         #expect(PublishFailure.kind(forStatus: 400) == .permanent)
+    }
+
+    @Test func permission403DoesNotExpireAccount() async {
+        let t = target()
+        await t.setScript([.permission])
+        let r = await PublishEngine.attempt(input(), target: t, attempt: 1, hadUncertain: false, firstTriedAt: .now, policy: policy)
+        guard case .actionRequired(let msg) = r.next else { Issue.record("expected actionRequired"); return }
+        #expect(msg.contains("pins:write"))
+    }
+
+    @Test func rateLimitRespectsRetryAfter() async {
+        let t = target()
+        await t.setScript([.rateLimited(180)])
+        let now = Date(timeIntervalSince1970: 2_000_000)
+        let r = await PublishEngine.attempt(input(), target: t, attempt: 1, hadUncertain: false, firstTriedAt: now, policy: policy, now: now)
+        #expect(r.next == .retry(at: now.addingTimeInterval(180)))
     }
 
     @Test func successPublishesOnce() async {

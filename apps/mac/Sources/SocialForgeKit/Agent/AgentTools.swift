@@ -38,6 +38,39 @@ public enum AgentTools {
                     "to": string("Scheduled before this ISO 8601 date-time."),
                     "limit": integer("At most this many (default 50, up to 500)."),
                   ]), queued: false),
+        AgentTool(name: "list_campaigns",
+                  description: "List marketing campaigns for a brand, with date range, UTM defaults, and post counts.",
+                  inputSchema: object(["brand": brandArg]), queued: false),
+        AgentTool(name: "list_templates",
+                  description: "List saved Creative Studio design templates for a brand.",
+                  inputSchema: object(["brand": brandArg]), queued: false),
+        AgentTool(name: "list_platforms",
+                  description: "List SocialForge's supported social platforms, status, media rules, and text limits.",
+                  inputSchema: object([:]), queued: false),
+        AgentTool(name: "list_boards",
+                  description: "List known destination boards/sections for a connected Pinterest account.",
+                  inputSchema: object(["brand": brandArg, "account_id": string("Account id from list_accounts.")]), queued: false),
+        AgentTool(name: "inspect_account_capabilities",
+                  description: "Inspect a connected account's status, auth mode, granted scopes, and dynamic publishing capabilities.",
+                  inputSchema: object(["brand": brandArg, "account_id": string("Account id from list_accounts.")]), queued: false),
+        AgentTool(name: "validate_posts",
+                  description: "Validate draft or review posts for a brand against platform rules and return any errors or warnings.",
+                  inputSchema: object(["brand": brandArg, "status": string("Optional status filter (defaults to draft & needsReview).")]), queued: false),
+        AgentTool(name: "inspect_schedule_availability",
+                  description: "Inspect upcoming scheduled post counts per day for a brand to find open schedule slots.",
+                  inputSchema: object([
+                    "brand": brandArg,
+                    "days": integer("Number of days ahead to inspect (default 14, max 90)."),
+                  ]), queued: false),
+        AgentTool(name: "search_media",
+                  description: "Search a brand's media library by text query, tag, collection, or media kind.",
+                  inputSchema: object([
+                    "brand": brandArg,
+                    "query": string("Text to match in filename, title, notes, or tags."),
+                    "collection": string("Filter by collection."),
+                    "kind": .object(["type": .string("string"), "enum": .array(["image", "video", "audio"].map(JSONValue.string))]),
+                    "limit": integer("At most this many (default 50, up to 500)."),
+                  ]), queued: false),
         AgentTool(name: "import_media",
                   description: "Copy image, video, or audio files (or folders of them) on this Mac into a brand's library. Queued: SocialForge adds them while it is open, or the next time it opens. The originals are never changed. Check the result with get_request_status, which lists the new media ids.",
                   inputSchema: object([
@@ -57,33 +90,84 @@ public enum AgentTools {
                         "file": string("Or an absolute path to a file to import first."),
                         "title": string("Title (Pin title, video title)."),
                         "description": string("Post text or description."),
-                        "link": string("Destination link."),
+                        "link": string("Destination link (https:// or http://)."),
                         "alt_text": string("Alt text for the image."),
                         "board_id": string("Pinterest board id, if known."),
+                        "campaign_id": string("Optional campaign id from list_campaigns."),
                         "scheduled_at": string("When to post: ISO 8601, e.g. 2026-12-01T09:00:00-05:00, or 2026-12-01T09:00 in time_zone."),
                         "time_zone": string("IANA time zone, e.g. America/New_York. Defaults to this Mac's."),
                     ], required: ["account_id", "scheduled_at"])]),
                   ], required: ["posts"]), queued: true),
+        AgentTool(name: "create_campaign_draft",
+                  description: "Create a draft campaign for a brand with optional goal, dates, and UTM settings. Queued like import_media.",
+                  inputSchema: object([
+                    "brand": brandArg,
+                    "name": string("Campaign name."),
+                    "goal": string("Campaign goal or brief."),
+                    "start_date": string("Optional ISO 8601 start date."),
+                    "end_date": string("Optional ISO 8601 end date."),
+                    "utm_source": string("Optional UTM source."),
+                    "utm_medium": string("Optional UTM medium."),
+                    "utm_campaign": string("Optional UTM campaign slug."),
+                  ], required: ["name"]), queued: true),
         AgentTool(name: "update_media",
                   description: "Change a media item's title, alt text, product link, collection, or tags. Queued like import_media.",
                   inputSchema: object([
+                    "brand": brandArg,
                     "media_id": string("A media id from list_media."),
                     "title": string("New title."),
                     "alt_text": string("New alt text."),
-                    "product_url": string("New product link."),
+                    "product_url": string("New product link (https:// or http://)."),
                     "collection": string("New collection; empty takes it out of its collection."),
                     "tags": .object(["type": .string("array"), "items": .object(["type": .string("string")]),
                                      "description": .string("Replaces the tags.")]),
                   ], required: ["media_id"]), queued: true),
         AgentTool(name: "get_request_status",
-                  description: "Whether queued requests (import_media, create_posts, update_media) are done, and what they made. Without request_id, lists the latest ones.",
+                  description: "Whether queued requests (import_media, create_posts, create_campaign_draft, update_media) are done, and what they made. Without request_id, lists the latest ones.",
                   inputSchema: object(["request_id": string("The id a queued tool returned.")]), queued: false),
     ]
 
     public static let maxPosts = 100
-    public static let statuses = ["draft", "needsReview", "approved", "scheduled", "preparing", "publishing", "published", "failed", "paused", "canceled"]
+    public static let maxFileBytes: UInt64 = 2 * 1024 * 1024 * 1024
+    public static let statuses = ["draft", "needsReview", "approved", "scheduled", "preparing", "uploading", "processing", "publishing", "published", "failed", "retryScheduled", "authRequired", "actionRequired", "outcomeUnknown", "manualRequired", "paused", "canceled"]
 
     public static func tool(_ name: String) -> AgentTool? { all.first { $0.name == name } }
+
+    /// Rejects non-absolute paths, symlinks, FIFOs/device nodes, and oversized files.
+    static func validatePath(_ path: String, allowDirectory: Bool) -> String? {
+        guard path.hasPrefix("/") else { return "Not found (use an absolute path): \(path)" }
+        let standardized = (path as NSString).standardizingPath
+        // On macOS, /tmp is a system symlink to /private/tmp; normalize that prefix without following user symlinks.
+        let clean = (standardized == "/tmp" || standardized.hasPrefix("/tmp/")) ? "/private" + standardized : standardized
+        guard FileManager.default.fileExists(atPath: clean) else { return "Not found (use an absolute path): \(path)" }
+        guard let attrs = try? FileManager.default.attributesOfItem(atPath: clean),
+              let type = attrs[.type] as? FileAttributeType else {
+            return "Cannot inspect file: \(path)"
+        }
+        if type == .typeSymbolicLink {
+            return "Symbolic links are not allowed: \(path)"
+        }
+        if type == .typeDirectory {
+            return allowDirectory ? nil : "Expected a file, not a directory: \(path)"
+        }
+        guard type == .typeRegular else {
+            return "Special files (FIFO, socket, device) are not allowed: \(path)"
+        }
+        if let size = (attrs[.size] as? NSNumber)?.uint64Value, size > maxFileBytes {
+            return "File exceeds 2 GB safety limit: \(path)"
+        }
+        return nil
+    }
+
+    static func validateURL(_ raw: String) -> String? {
+        let s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !s.isEmpty else { return nil }
+        guard let url = URL(string: s), let scheme = url.scheme?.lowercased(),
+              (scheme == "https" || scheme == "http"), url.host?.isEmpty == false else {
+            return "URL must start with https:// or http://."
+        }
+        return nil
+    }
 
     /// Why a queued request cannot be accepted, or nil when it can. Runs before anything is queued,
     /// so an agent hears about a bad path or date at once instead of in a later status check.
@@ -91,8 +175,8 @@ public enum AgentTools {
         switch tool {
         case "import_media":
             guard let paths = args["paths"]?.arrayValue?.compactMap(\.stringValue), !paths.isEmpty else { return "paths needs at least one file or folder." }
-            if let missing = paths.first(where: { !$0.hasPrefix("/") || !FileManager.default.fileExists(atPath: $0) }) {
-                return "Not found (use an absolute path): \(missing)"
+            for path in paths {
+                if let err = validatePath(path, allowDirectory: true) { return err }
             }
             return nil
         case "create_posts":
@@ -104,8 +188,11 @@ public enum AgentTools {
                 guard p["account_id"]?.stringValue?.isEmpty == false else { return "\(n) needs an account_id (see list_accounts)." }
                 let media = p["media_id"]?.stringValue ?? "", file = p["file"]?.stringValue ?? ""
                 if media.isEmpty && file.isEmpty { return "\(n) needs a media_id or a file." }
-                if !file.isEmpty, !file.hasPrefix("/") || !FileManager.default.fileExists(atPath: file) { return "\(n): file not found (use an absolute path): \(file)" }
+                if !file.isEmpty, let err = validatePath(file, allowDirectory: false) {
+                    return "\(n): file \(err.lowercased())"
+                }
                 if !media.isEmpty, UUID(uuidString: media) == nil { return "\(n): media_id is not a media id from list_media." }
+                if let link = p["link"]?.stringValue, let urlErr = validateURL(link) { return "\(n): link \(urlErr)" }
                 let zoneID = p["time_zone"]?.stringValue ?? ""
                 if !zoneID.isEmpty, TimeZone(identifier: zoneID) == nil { return "\(n): unknown time_zone \(zoneID)." }
                 guard let when = date(p["scheduled_at"]?.stringValue ?? "", timeZone: TimeZone(identifier: zoneID) ?? .current) else {
@@ -114,8 +201,20 @@ public enum AgentTools {
                 if when < now.addingTimeInterval(-60) { return "\(n): scheduled_at is in the past." }
             }
             return nil
+        case "create_campaign_draft":
+            guard let name = args["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines), !name.isEmpty else {
+                return "name is required for create_campaign_draft."
+            }
+            if let s = args["start_date"]?.stringValue, !s.isEmpty, date(s, timeZone: .current) == nil {
+                return "start_date must be ISO 8601."
+            }
+            if let e = args["end_date"]?.stringValue, !e.isEmpty, date(e, timeZone: .current) == nil {
+                return "end_date must be ISO 8601."
+            }
+            return nil
         case "update_media":
             guard let id = args["media_id"]?.stringValue, UUID(uuidString: id) != nil else { return "media_id is not a media id from list_media." }
+            if let url = args["product_url"]?.stringValue, let urlErr = validateURL(url) { return "product_url: \(urlErr)" }
             let fields = ["title", "alt_text", "product_url", "collection", "tags"]
             return fields.contains(where: { args[$0] != nil }) ? nil : "Nothing to change: give title, alt_text, product_url, collection, or tags."
         default:

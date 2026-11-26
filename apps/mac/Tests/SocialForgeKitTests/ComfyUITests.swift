@@ -197,4 +197,58 @@ struct ComfyClientTests {
         let stats = try await ComfyUIClient(baseURL: stub.base, token: nil, session: stub.session).systemStats()
         #expect(stats.devices.first?.name == "mps")
     }
+
+    @Test func detectsFluxAndLoadImageMapping() throws {
+        let graph = """
+        {
+          "1": {"class_type": "CLIPTextEncode", "inputs": {"text": "a sunlit vase"}},
+          "2": {"class_type": "BasicGuider", "inputs": {"conditioning": ["1", 0]}},
+          "3": {"class_type": "RandomNoise", "inputs": {"noise_seed": 99}},
+          "4": {"class_type": "LoadImage", "inputs": {"image": "ref.png"}},
+          "5": {"class_type": "SamplerCustomAdvanced", "inputs": {"noise": ["3", 0], "guider": ["2", 0]}},
+          "6": {"class_type": "SaveImage", "inputs": {"images": ["5", 0]}}
+        }
+        """
+        let wf = try ComfyWorkflow.parse(name: "flux", json: Data(graph.utf8))
+        #expect(wf.mapping.positive == ComfyInputRef(node: "1", input: "text"))
+        #expect(wf.mapping.seed == ComfyInputRef(node: "3", input: "noise_seed"))
+        #expect(wf.mapping.inputImage == ComfyInputRef(node: "4", input: "image"))
+        let applied = wf.applying(prompt: "ceramic cup", negative: nil, seed: 123, width: nil, height: nil, batch: nil, checkpoint: nil, inputImage: "uploaded.png")
+        #expect(applied["4"]?.objectValue?["inputs"]?.objectValue?["image"] == .string("uploaded.png"))
+    }
+
+    @Test func validateWorkflowReportsMissingNodesAndModels() async throws {
+        let stub = HTTPStub.make { _, _ in
+            (200, json(#"{"CheckpointLoaderSimple":{"input":{"required":{"ckpt_name":[["installed.safetensors"]]}}},"SaveImage":{"input":{"required":{}}}}"#))
+        }
+        let wf = try ComfyWorkflow.parse(name: "test", json: Data("""
+        {
+          "1": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": "missing.safetensors"}},
+          "2": {"class_type": "CustomFluxNode", "inputs": {}}
+        }
+        """.utf8))
+        let report = try await ComfyUIClient(baseURL: stub.base, token: nil, session: stub.session).validateWorkflow(wf)
+        #expect(!report.isValid)
+        #expect(report.missingNodes == ["CustomFluxNode"])
+        #expect(report.missingModels == ["CheckpointLoaderSimple.ckpt_name: missing.safetensors"])
+    }
+
+    @Test func cancellingQueuedJobDoesNotInterruptDifferentRunningJob() async throws {
+        let stub = HTTPStub.make { req, _ in
+            switch req.url?.path {
+            case "/prompt": (200, json(#"{"prompt_id":"my-queued-job"}"#))
+            case "/queue":
+                req.httpMethod == "GET"
+                    ? (200, json(#"{"queue_running":[[0,"someone-elses-job"]],"queue_pending":[[1,"my-queued-job"]]}"#))
+                    : (200, json("{}"))
+            default: (200, json("{}"))
+            }
+        }
+        let c = ComfyUIClient(baseURL: stub.base, token: nil, session: stub.session)
+        let status = try await c.jobStatus(promptID: "my-queued-job")
+        #expect(status == .queued(position: 1))
+        await c.stop(promptID: "my-queued-job")
+        #expect(stub.log.paths.contains("/queue"))
+        #expect(!stub.log.paths.contains("/interrupt"))
+    }
 }

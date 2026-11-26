@@ -55,13 +55,17 @@ struct CampaignsView: View {
                                 metric("Review", posts.filter { $0.status == .needsReview }.count)
                                 metric("Media", media.count)
                             }
+                            if posts.isEmpty && c.endDate >= .now {
+                                Label("No posts scheduled for this campaign yet", systemImage: "calendar.badge.exclamationmark")
+                                    .font(DS.caption).foregroundStyle(DS.amber)
+                            }
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .card(padding: Space.xl, selected: model.campaignSelection == c.uuid)
                         .onTapGesture { model.campaignSelection = c.uuid }
                         .contextMenu {
                             Button("Duplicate") { duplicate(c) }
-                            Button("Delete", role: .destructive) { model.context.delete(c); try? model.context.save() }
+                            Button("Delete", role: .destructive) { deleteCampaign(c) }
                         }
                     }
                 }
@@ -94,12 +98,24 @@ struct CampaignsView: View {
         model.campaignSelection = c.uuid
     }
 
+    private func deleteCampaign(_ c: Campaign) {
+        let id = c.uuid
+        for p in allPubs where p.campaignID == id { p.campaignID = nil }
+        for a in allAssets where a.campaignID == id { a.campaignID = nil }
+        if model.campaignSelection == id { model.campaignSelection = nil }
+        model.context.delete(c)
+        try? model.context.save()
+    }
+
     private func duplicate(_ c: Campaign) {
         guard let ws = model.workspaceID else { return }
         let d = Campaign(workspaceID: ws, name: c.name + " copy")
-        d.kind = c.kind; d.goal = c.goal; d.utmSource = c.utmSource; d.utmMedium = c.utmMedium; d.notes = c.notes; d.templateID = c.templateID
+        d.kind = c.kind; d.goal = c.goal; d.utmSource = c.utmSource; d.utmMedium = c.utmMedium
+        d.utmCampaign = c.utmCampaign.isEmpty ? "" : "\(c.utmCampaign)-copy"
+        d.perPlatformUTMSource = c.perPlatformUTMSource
+        d.notes = c.notes; d.templateID = c.templateID
         d.startDate = c.endDate
-        d.endDate = c.endDate.addingTimeInterval(c.endDate.timeIntervalSince(c.startDate))
+        d.endDate = c.endDate.addingTimeInterval(max(86_400, c.endDate.timeIntervalSince(c.startDate)))
         model.context.insert(d)
         try? model.context.save()
     }
@@ -111,8 +127,8 @@ struct CampaignInspector: View {
     @Query private var allPubs: [Publication]
 
     var body: some View {
-        if let c = allCampaigns.first(where: { $0.uuid == model.campaignSelection }) {
-            CampaignEditor(campaign: c, posts: allPubs.filter { $0.campaignID == c.uuid })
+        if let c = allCampaigns.first(where: { $0.uuid == model.campaignSelection && $0.workspaceID == model.workspaceID }) {
+            CampaignEditor(campaign: c, posts: allPubs.filter { $0.campaignID == c.uuid && $0.workspaceID == model.workspaceID })
         } else {
             VStack(spacing: 0) {
                 PanelHeader(title: "Campaign")
@@ -140,7 +156,8 @@ struct CampaignEditor: View {
                     TextField("Name", text: $campaign.name).fieldStyle()
                     TextField("Goal", text: $campaign.goal, axis: .vertical).lineLimit(2...4).fieldStyle()
                     DatePicker("Starts", selection: $campaign.startDate, displayedComponents: .date).font(DS.body)
-                    DatePicker("Ends", selection: $campaign.endDate, displayedComponents: .date).font(DS.body)
+                        .onChange(of: campaign.startDate) { if campaign.endDate < campaign.startDate { campaign.endDate = campaign.startDate } }
+                    DatePicker("Ends", selection: $campaign.endDate, in: campaign.startDate..., displayedComponents: .date).font(DS.body)
                     Picker("Template", selection: $campaign.templateID) {
                         Text("None").tag(UUID?.none)
                         ForEach(templates.filter { $0.workspaceID == model.workspaceID }) { Text($0.name).tag(UUID?.some($0.uuid)) }
@@ -150,13 +167,19 @@ struct CampaignEditor: View {
                 }
                 VStack(alignment: .leading, spacing: Space.sm) {
                     SectionLabel("UTM links")
-                    HStack { Text("source").font(DS.mono).foregroundStyle(DS.text2).frame(width: 72, alignment: .leading); TextField("", text: $campaign.utmSource).fieldStyle() }
+                    Toggle("Use platform name as utm_source", isOn: $campaign.perPlatformUTMSource).toggleStyle(SFToggleStyle()).font(DS.body)
+                    if !campaign.perPlatformUTMSource {
+                        HStack { Text("source").font(DS.mono).foregroundStyle(DS.text2).frame(width: 72, alignment: .leading); TextField("", text: $campaign.utmSource).fieldStyle() }
+                    }
                     HStack { Text("medium").font(DS.mono).foregroundStyle(DS.text2).frame(width: 72, alignment: .leading); TextField("", text: $campaign.utmMedium).fieldStyle() }
                     HStack { Text("campaign").font(DS.mono).foregroundStyle(DS.text2).frame(width: 72, alignment: .leading); TextField("", text: $campaign.utmCampaign).fieldStyle() }
                     Text(sample).font(DS.mono).foregroundStyle(DS.text2).lineLimit(3).textSelection(.enabled)
                     let editable = posts.filter { $0.status.isLocal && !$0.link.isEmpty }
                     Button("Tag \(editable.count) post links") {
-                        for p in editable { p.link = UTM.apply(to: p.link, source: campaign.utmSource, medium: campaign.utmMedium, campaign: campaign.utmCampaign) }
+                        for p in editable {
+                            let src = campaign.perPlatformUTMSource ? p.platform : campaign.utmSource
+                            p.link = UTM.apply(to: p.link, source: src, medium: campaign.utmMedium, campaign: campaign.utmCampaign)
+                        }
                         try? model.context.save()
                     }
                     .buttonStyle(SecondaryButtonStyle(fullWidth: true)).disabled(editable.isEmpty)
@@ -169,14 +192,18 @@ struct CampaignEditor: View {
                     }
                     .buttonStyle(SecondaryButtonStyle(fullWidth: true)).disabled(model.mediaSelection.isEmpty)
                     Button("Add \(model.publicationSelection.count) selected posts") {
-                        let all = (try? model.context.fetch(FetchDescriptor<Publication>())) ?? []
+                        let wsID = model.workspaceID
+                        let all = ((try? model.context.fetch(FetchDescriptor<Publication>())) ?? []).filter { $0.workspaceID == wsID }
                         for p in all where model.publicationSelection.contains(p.id) { p.campaignID = campaign.uuid }
                         try? model.context.save()
                     }
                     .buttonStyle(SecondaryButtonStyle(fullWidth: true)).disabled(model.publicationSelection.isEmpty)
                     Button("Plan posts in Bulk Publisher") {
-                        let media = ((try? model.context.fetch(FetchDescriptor<MediaAsset>())) ?? []).filter { $0.campaignID == campaign.uuid }
+                        let cid = campaign.uuid
+                        let wsID = campaign.workspaceID
+                        let media = ((try? model.context.fetch(FetchDescriptor<MediaAsset>(predicate: #Predicate { $0.workspaceID == wsID }))) ?? []).filter { $0.campaignID == cid }
                         model.bulk.assetIDs = media.map(\.uuid)
+                        model.bulk.campaignID = cid
                         model.bulk.runName = campaign.name
                         model.bulk.rule.start = LocalDay(max(campaign.startDate, .now.addingTimeInterval(86_400)), in: .current)
                         model.page = .bulk
