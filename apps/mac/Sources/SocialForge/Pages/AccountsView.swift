@@ -284,6 +284,7 @@ struct ConnectionWizardSheet: View {
     @State private var statusMessage: String?
     @State private var busy = false
     @AppStorage("pinterest.apiBase") private var pinterestBase = "https://api.pinterest.com"
+    @AppStorage(MetaSettings.pinterestRedirectKey) private var pinterestRedirect = MetaSettings.defaultHTTPSRedirect
 
     private var spec: PlatformSpec? { PlatformRegistry.spec(platform) }
     private var keys: PlatformKeys? { PlatformKeys.forPlatform(platform) }
@@ -318,6 +319,7 @@ struct ConnectionWizardSheet: View {
 
     private var redirectURI: String {
         switch platform {
+        case "pinterest": pinterestRedirect.trimmingCharacters(in: .whitespacesAndNewlines).nonEmpty ?? MetaSettings.defaultHTTPSRedirect
         case "facebook": MetaSettings.redirect
         case "instagram": authVariant == "instagram_login" ? MetaSettings.instagramRedirect : MetaSettings.redirect
         case "threads": MetaSettings.threadsRedirect
@@ -359,15 +361,29 @@ struct ConnectionWizardSheet: View {
 
                     VStack(alignment: .leading, spacing: Space.sm) {
                         SectionLabel("2. Register Redirect URI")
-                        HStack {
-                            Text(redirectURI).font(DS.mono).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
-                            Spacer()
-                            Button("Copy URI") {
-                                NSPasteboard.general.clearContents()
-                                NSPasteboard.general.setString(redirectURI, forType: .string)
-                                statusMessage = "Copied redirect URI to clipboard."
+                        if platform == "pinterest" {
+                            HStack(spacing: Space.sm) {
+                                TextField(MetaSettings.defaultHTTPSRedirect, text: $pinterestRedirect).fieldStyle().font(DS.mono)
+                                Button("Copy URI") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(redirectURI, forType: .string)
+                                    statusMessage = "Copied redirect URI to clipboard."
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
                             }
-                            .buttonStyle(SecondaryButtonStyle())
+                            Text("Pinterest requires an HTTPS redirect URI. After approving in your browser, click Copy address on the callback page and paste it in Step 4 below.")
+                                .font(DS.small).foregroundStyle(DS.text2)
+                        } else {
+                            HStack {
+                                Text(redirectURI).font(DS.mono).textSelection(.enabled).lineLimit(1).truncationMode(.middle)
+                                Spacer()
+                                Button("Copy URI") {
+                                    NSPasteboard.general.clearContents()
+                                    NSPasteboard.general.setString(redirectURI, forType: .string)
+                                    statusMessage = "Copied redirect URI to clipboard."
+                                }
+                                .buttonStyle(SecondaryButtonStyle())
+                            }
                         }
                     }
                     .card()
@@ -527,7 +543,7 @@ struct PlatformKeysList: View {
     /// The redirect URI to register on the developer site.
     static func redirect(for platform: String) -> String? {
         switch platform {
-        case "pinterest": "http://127.0.0.1:\(OAuthLoopback.port)/pinterest/callback"
+        case "pinterest": MetaSettings.pinterestRedirect
         case "facebook", "instagram": MetaSettings.redirect
         case "threads": MetaSettings.threadsRedirect
         case "linkedin": "http://127.0.0.1:\(OAuthLoopback.port)/linkedin/callback"

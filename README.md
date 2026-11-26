@@ -45,7 +45,7 @@ Then:
 1. **Social Accounts > Connect Account > Mock Pinterest (testing only)** to try the
    whole flow, or set up **Settings > Publishing > Your Pinterest app** (App ID and
    secret from developers.pinterest.com, redirect URI
-   `http://127.0.0.1:8085/pinterest/callback`) and press Connect Pinterest. For
+   `https://rmclain.github.io/socialforge/`) and press Connect Pinterest. For
    Facebook, Instagram, and Threads, follow [docs/META_SETUP.md](docs/META_SETUP.md).
 2. **Bulk Publisher**: drop a folder of images and a CSV, choose the account and a
    board, set the cadence, Create Posts, review, Approve, Activate. The CSV has one

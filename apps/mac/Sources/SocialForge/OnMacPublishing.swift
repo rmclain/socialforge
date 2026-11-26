@@ -90,7 +90,7 @@ extension AppModel {
 
     /// Actively tests one account's live connection (never assumes a saved token works).
     func testAccountConnection(_ account: SocialAccount) async -> ConnectionDiagnosticReport {
-        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.0"
+        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.1"
         let providerName = PlatformRegistry.spec(account.platform)?.name ?? account.platform.capitalized
         if account.isMock {
             boards[account.serverID] = MockPinterestTarget.boards
@@ -250,42 +250,9 @@ extension AppModel {
     // MARK: - Pinterest OAuth
 
     func connectPinterestOnMac() async {
-        guard let targetWorkspace = workspaceID else { return }
-        guard let clientID = Keychain.read("pinterest.clientID"), !clientID.isEmpty,
-              let secret = Keychain.read("pinterest.clientSecret"), !secret.isEmpty else {
-            lastError = "Add your Pinterest app's ID and secret in Connections first."
-            page = .accounts
-            return
-        }
-        let callbackPath = "/pinterest/callback"
-        let redirect = "http://127.0.0.1:\(OAuthLoopback.port)\(callbackPath)"
-        let state = UUID().uuidString
-        busyMessage = "Waiting for Pinterest in your browser…"
-        defer { busyMessage = nil }
-        do {
-            let loopback = OAuthLoopback(service: "Pinterest", expectedPath: callbackPath)
-            try await loopback.start()
-            NSWorkspace.shared.open(PinterestTarget.authorizeURL(clientID: clientID, redirectURI: redirect, state: state))
-            let code = try await loopback.waitForCode(state: state)
-            let base = UserDefaults.standard.string(forKey: "pinterest.apiBase").flatMap(URL.init(string:)) ?? URL(string: "https://api.pinterest.com")!
-            let target = PinterestTarget(apiBase: base)
-            let tokens = try await target.exchange(code: code, redirectURI: redirect, clientID: clientID, clientSecret: secret)
-            let user = try await target.userAccount(accessToken: tokens.access)
-            try upsertMacAccount(
-                workspaceID: targetWorkspace, platform: "pinterest", platformID: user.id,
-                name: user.name, handle: "@\(user.username)", token: tokens.access,
-                refreshToken: tokens.refresh, expiresIn: tokens.expiresIn,
-                scopes: tokens.scopes.isEmpty ? PinterestTarget.scopes : tokens.scopes,
-                accountType: "business", authMode: target.isSandbox ? "sandbox" : "production"
-            )
-            saveContext("connectPinterest")
-            log("Connected Pinterest as \(user.name)", symbol: "link", category: "connection", workspace: targetWorkspace)
-            await refreshLocalAccounts()
-        } catch let e as PublishFailure {
-            lastError = DiagnosticRedactor.sanitize(e.message)
-        } catch {
-            lastError = "Pinterest connection did not finish: \(DiagnosticRedactor.sanitize(error.localizedDescription))"
-        }
+        // Supports HTTPS redirect URIs (Pinterest Developer Portal default) via validated paste-back,
+        // as well as automatic loopback if the user explicitly configures http://localhost:8085/...
+        await connectMeta(.pinterest)
     }
 
     // MARK: - LinkedIn OAuth

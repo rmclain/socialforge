@@ -249,7 +249,7 @@ enum SelfTest {
             }
             check("every platform links to where its developer keys are made",
                   PlatformRegistry.all.allSatisfy { PlatformKeys.forPlatform($0.platform) != nil }
-                  && PlatformKeysList.redirect(for: "pinterest")?.hasSuffix("/pinterest/callback") == true
+                  && PlatformKeysList.redirect(for: "pinterest")?.hasPrefix("https://") == true
                   && PlatformKeysList.redirect(for: "threads")?.hasPrefix("https://") == true)
             // A brand saves its files to its own folder (Brand Kits > Save files to).
             if let made = kit {

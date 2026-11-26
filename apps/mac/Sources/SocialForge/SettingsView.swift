@@ -151,6 +151,7 @@ struct PublishingSettings: View {
     @State private var clientSecret = ""
     @State private var hasPinterestSecret = false
     @AppStorage("pinterest.apiBase") private var apiBase = "https://api.pinterest.com"
+    @AppStorage(MetaSettings.pinterestRedirectKey) private var pinterestRedirect = MetaSettings.defaultHTTPSRedirect
     @AppStorage("publish.missedPolicy") private var missedPolicy = MissedPostPolicy.publishWhenAvailable.rawValue
     @AppStorage("publish.missedWindowMinutes") private var missedWindowMinutes = 60
 
@@ -178,9 +179,18 @@ struct PublishingSettings: View {
         }
         PlatformsSettingsGroup()
         if model.publishMode == .mac {
-            SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add http://127.0.0.1:8085/pinterest/callback as a redirect URI. The ID, secret, and tokens stay in your Keychain.") {
+            SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add an HTTPS redirect URI (default: \(MetaSettings.defaultHTTPSRedirect)). After authorizing in your browser, click Copy address and paste it into Finish connecting below. Keys stay in your Keychain.") {
                 TextField("App ID", text: $clientID).fieldStyle().onSubmit { savePinterest() }
                 SecureField(hasPinterestSecret ? "App secret saved · paste to replace" : "App secret", text: $clientSecret).fieldStyle().onSubmit { savePinterest() }
+                HStack(spacing: Space.sm) {
+                    TextField(MetaSettings.defaultHTTPSRedirect, text: $pinterestRedirect).fieldStyle().font(DS.mono)
+                    Button("Copy URI") {
+                        let clean = pinterestRedirect.trimmingCharacters(in: .whitespacesAndNewlines)
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(clean.isEmpty ? MetaSettings.defaultHTTPSRedirect : clean, forType: .string)
+                    }
+                    .buttonStyle(SecondaryButtonStyle())
+                }
                 PillPicker(options: ["https://api.pinterest.com", "https://api-sandbox.pinterest.com"], selection: $apiBase) { $0.contains("sandbox") ? "Sandbox (Trial access)" : "Production" }
                 HStack {
                     Button("Save to Keychain") { savePinterest() }.buttonStyle(SecondaryButtonStyle())

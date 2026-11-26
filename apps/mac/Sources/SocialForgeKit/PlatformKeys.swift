@@ -22,7 +22,7 @@ public struct PlatformKeys: Sendable, Identifiable, Equatable {
         PlatformKeys(platform: "pinterest",
                      portal: URL(string: "https://developers.pinterest.com/apps/")!,
                      guide: URL(string: "https://developers.pinterest.com/docs/getting-started/set-up-app/")!,
-                     steps: "Create an app (Trial access writes to Sandbox; Standard access writes to live Pinterest), add the redirect URI, and copy its App ID and secret.",
+                     steps: "Create an app (Trial access writes to Sandbox; Standard access writes to live Pinterest), add the HTTPS redirect URI, and copy its App ID and secret.",
                      keys: ["App ID", "App secret"], usedBySocialForge: true),
         PlatformKeys(platform: "facebook",
                      portal: URL(string: "https://developers.facebook.com/apps/")!,

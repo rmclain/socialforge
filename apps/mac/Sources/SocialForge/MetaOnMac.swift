@@ -9,7 +9,7 @@ import SocialForgeKit
 
 /// A sign-in started in the browser, waiting for the address it lands on.
 struct PendingOAuth: Equatable {
-    enum Kind: String { case facebook, instagramLogin, threads }
+    enum Kind: String { case pinterest, facebook, instagramLogin, threads }
     let kind: Kind
     let state: String
     let redirectURI: String
@@ -18,6 +18,7 @@ struct PendingOAuth: Equatable {
 
     var serviceName: String {
         switch kind {
+        case .pinterest: "Pinterest"
         case .facebook: "Facebook & Instagram"
         case .instagramLogin: "Instagram"
         case .threads: "Threads"
@@ -58,14 +59,20 @@ enum MetaSettings {
     static let configKey = "meta.configID", redirectKey = "meta.redirect"
     static let instagramRedirectKey = "instagram.redirect"
     static let threadsRedirectKey = "threads.redirect"
-    static let defaultThreadsRedirect = "https://rmclain.github.io/socialforge/"
+    static let pinterestRedirectKey = "pinterest.redirect"
+    static let defaultHTTPSRedirect = "https://rmclain.github.io/socialforge/"
+    static let defaultThreadsRedirect = defaultHTTPSRedirect
 
     static var redirect: String { UserDefaults.standard.string(forKey: redirectKey).flatMap { $0.isEmpty ? nil : $0 } ?? Meta.desktopRedirect }
     static var instagramRedirect: String {
-        UserDefaults.standard.string(forKey: instagramRedirectKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultThreadsRedirect
+        UserDefaults.standard.string(forKey: instagramRedirectKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultHTTPSRedirect
     }
     static var threadsRedirect: String {
-        UserDefaults.standard.string(forKey: threadsRedirectKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultThreadsRedirect
+        UserDefaults.standard.string(forKey: threadsRedirectKey).flatMap { $0.isEmpty ? nil : $0 } ?? defaultHTTPSRedirect
+    }
+    static var pinterestRedirect: String {
+        let raw = UserDefaults.standard.string(forKey: pinterestRedirectKey)?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return (raw?.isEmpty == false ? raw! : defaultHTTPSRedirect)
     }
 
     /// A redirect to http://127.0.0.1:8085 or http://localhost:8085 is answered by SocialForge itself.
@@ -80,6 +87,7 @@ extension AppModel {
     func connectMeta(_ kind: PendingOAuth.Kind) async {
         guard let targetWorkspace = workspaceID else { return }
         let (idItem, secretItem, label): (String, String, String) = switch kind {
+        case .pinterest: ("pinterest.clientID", "pinterest.clientSecret", "Pinterest")
         case .facebook: (MetaSettings.appIDItem, MetaSettings.secretItem, "Meta")
         case .instagramLogin: (MetaSettings.instagramIDItem, MetaSettings.instagramSecretItem, "Instagram")
         case .threads: (MetaSettings.threadsIDItem, MetaSettings.threadsSecretItem, "Threads")
@@ -90,12 +98,15 @@ extension AppModel {
             return
         }
         let redirect: String = switch kind {
+        case .pinterest: MetaSettings.pinterestRedirect
         case .facebook: MetaSettings.redirect
         case .instagramLogin: MetaSettings.instagramRedirect
         case .threads: MetaSettings.threadsRedirect
         }
         let state = UUID().uuidString
         let url: URL = switch kind {
+        case .pinterest:
+            PinterestTarget.authorizeURL(clientID: appID, redirectURI: redirect, state: state)
         case .facebook:
             MetaAuth.facebookAuthorizeURL(appID: appID, redirectURI: redirect, state: state,
                                           configID: UserDefaults.standard.string(forKey: MetaSettings.configKey))
@@ -145,6 +156,21 @@ extension AppModel {
         defer { busyMessage = nil }
         do {
             switch pending.kind {
+            case .pinterest:
+                let clientID = Keychain.read("pinterest.clientID") ?? ""
+                let secret = Keychain.read("pinterest.clientSecret") ?? ""
+                let base = UserDefaults.standard.string(forKey: "pinterest.apiBase").flatMap(URL.init(string:)) ?? URL(string: "https://api.pinterest.com")!
+                let target = PinterestTarget(apiBase: base)
+                let tokens = try await target.exchange(code: code, redirectURI: pending.redirectURI, clientID: clientID, clientSecret: secret)
+                let user = try await target.userAccount(accessToken: tokens.access)
+                try upsertMacAccount(
+                    workspaceID: targetWorkspace, platform: "pinterest", platformID: user.id,
+                    name: user.name, handle: "@\(user.username)", token: tokens.access,
+                    refreshToken: tokens.refresh, expiresIn: tokens.expiresIn,
+                    scopes: tokens.scopes.isEmpty ? PinterestTarget.scopes : tokens.scopes,
+                    accountType: "business", authMode: target.isSandbox ? "sandbox" : "production"
+                )
+                metaMessage = "Connected Pinterest as \(user.name)."
             case .facebook:
                 let token = try await auth.facebookToken(code: code, redirectURI: pending.redirectURI,
                                                          appID: Keychain.read(MetaSettings.appIDItem) ?? "",
