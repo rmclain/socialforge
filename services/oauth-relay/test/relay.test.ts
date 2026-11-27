@@ -253,9 +253,10 @@ describe('SocialForge Stateless OAuth Relay', () => {
     assert.ok(simHTML.includes('socialforge://oauth/callback'));
   });
 
-  it('GET / renders the live status dashboard with callback URLs and zero secrets', async () => {
+  it('GET / renders the live status dashboard with callback URLs, connect-src self CSP, and zero secrets', async () => {
     const res = await handleHome(new Request(`${BASE}/`), { env: FULL_ENV, fetchImpl: globalThis.fetch });
     assert.equal(res.status, 200);
+    assert.ok((res.headers.get('Content-Security-Policy') ?? '').includes("connect-src 'self'"));
     const body = await res.text();
     assert.ok(body.includes('SocialForge OAuth Relay'));
     assert.ok(body.includes(`${BASE}/api/oauth/callback/pinterest`));
