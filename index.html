@@ -141,7 +141,7 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
 
   <header class="hero">
     <div>
-      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source · version 0.5.1</span>
+      <span class="eyebrow"><b>●</b> Native for macOS 26 · free and open source · version 0.5.2</span>
       <h1 class="serif">Pins, Reels, and Shorts,<br>forged in <em>one sitting</em>.</h1>
       <p class="lede">Drop in product photos, clips, music, and a CSV of links. SocialForge dresses every image and video in your brand template with real, editable type, generates assets with your own ComfyUI or BYOK AI providers, plans the calendar, and posts across eight platforms from your Mac. You approve everything first.</p>
       <div class="ctas">
@@ -275,11 +275,14 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
 </div>
 <div class="signin" id="signin" role="status">
   <h3 id="signin-title">Sign-in complete</h3>
-  <p id="signin-text">Click Copy address below and paste it into SocialForge to finish connecting. The authorization code works once and expires in minutes.</p>
-  <button class="btn primary" id="signin-copy" type="button">Copy address</button>
+  <p id="signin-text">Opening SocialForge on your Mac… If it didn't open automatically, click Open SocialForge or Copy address below.</p>
+  <div class="ctas" style="margin-top:12px">
+    <a class="btn primary" id="signin-open" href="#">Open SocialForge</a>
+    <button class="btn ghost" id="signin-copy" type="button">Copy address</button>
+  </div>
 </div>
 <script>
-// Threads sends people back here after they sign in (SocialForge's redirect).
+// OAuth callback handler (Pinterest, Threads, Instagram, etc.).
 // Capture the full callback URL into memory and immediately strip sensitive query/fragment
 // parameters from the address bar and history so codes cannot leak via referrers or history.
 (function () {
@@ -287,18 +290,25 @@ footer { padding: 40px 0 60px; color: var(--text2); font-size: 14px; display: fl
   var search = location.search;
   var hashParams = new URLSearchParams(location.hash ? location.hash.replace(/^#/, "") : "");
   var q = new URLSearchParams(search);
-  var hasCode = q.has("code") || hashParams.has("code");
-  var hasError = q.has("error") || hashParams.has("error");
-  if (!hasCode && !hasError) return;
+  var code = q.get("code") || hashParams.get("code") || "";
+  var state = q.get("state") || hashParams.get("state") || "";
+  var error = q.get("error") || hashParams.get("error") || "";
+  var errorDesc = q.get("error_description") || hashParams.get("error_description") || "";
+  if (!code && !error) return;
   try {
     history.replaceState(null, "", location.pathname);
   } catch (_) {}
   var box = document.getElementById("signin");
-  if (hasError) {
+  var openLink = document.getElementById("signin-open");
+  if (error) {
     document.getElementById("signin-title").textContent = "Sign-in was not completed";
-    document.getElementById("signin-text").textContent =
-      q.get("error_description") || hashParams.get("error_description") || "Try connecting again in SocialForge.";
+    document.getElementById("signin-text").textContent = errorDesc || "Try connecting again in SocialForge.";
     document.getElementById("signin-copy").style.display = "none";
+    openLink.style.display = "none";
+  } else {
+    var deep = "socialforge://oauth/callback?code=" + encodeURIComponent(code) + (state ? "&state=" + encodeURIComponent(state) : "");
+    openLink.href = deep;
+    setTimeout(function () { window.location.href = deep; }, 150);
   }
   document.getElementById("signin-copy").addEventListener("click", function () {
     var b = this;
