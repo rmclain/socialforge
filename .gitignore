@@ -16,3 +16,4 @@ repo.xml
 .forgedeck/environments.json
 .forgedeck/issues-done.json
 .forgedeck/memory.json
+.vercel/

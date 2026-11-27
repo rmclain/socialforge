@@ -90,7 +90,7 @@ extension AppModel {
 
     /// Actively tests one account's live connection (never assumes a saved token works).
     func testAccountConnection(_ account: SocialAccount) async -> ConnectionDiagnosticReport {
-        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.2"
+        let appVer = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.5.3"
         let providerName = PlatformRegistry.spec(account.platform)?.name ?? account.platform.capitalized
         if account.isMock {
             boards[account.serverID] = MockPinterestTarget.boards
