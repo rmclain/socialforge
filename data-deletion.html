@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Data Deletion Instructions — SocialForge</title>
+<link rel="icon" href="assets/icon.png">
+<style>
+:root { color-scheme: dark light; --bg: #0f0f13; --card: #19191e; --stroke: rgba(255,255,255,.1); --text: #f1f1f5; --text2: #a0a0ab; --accent: #ff8a5c; }
+@media (prefers-color-scheme: light) { :root { --bg: #f4efe9; --card: #fbf8f5; --stroke: rgba(0,0,0,.09); --text: #1c1b1f; --text2: #616068; --accent: #d95b26; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 40px 20px 72px; background: var(--bg); color: var(--text); font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+.wrap { max-width: 780px; margin: 0 auto; }
+nav { display: flex; gap: 16px; align-items: center; margin-bottom: 28px; font-size: 14px; }
+nav a { color: var(--text2); text-decoration: none; }
+nav a:hover, a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.card { background: var(--card); border: 1px solid var(--stroke); border-radius: 16px; padding: 32px; }
+h1 { margin: 0 0 6px; font-size: 30px; font-weight: 680; }
+h2 { margin: 28px 0 8px; font-size: 18px; font-weight: 650; }
+p, li { color: var(--text2); }
+strong { color: var(--text); }
+ol, ul { padding-left: 20px; }
+li { margin: 8px 0; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a href="./">← SocialForge Home</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+    <a href="data-deletion.html">Data Deletion</a>
+  </nav>
+  <main class="card">
+    <h1>User Data Deletion Instructions</h1>
+    <p>SocialForge is a <strong>local-first macOS application</strong> with a <strong>stateless OAuth relay</strong>. We do not store user accounts, posts, media, or OAuth tokens on any SocialForge server — all data resides exclusively on your own Mac.</p>
+
+    <h2>1. Disconnect an Account in SocialForge</h2>
+    <ol>
+      <li>Open <strong>SocialForge</strong> on your Mac and navigate to <strong>Connections › Social Accounts</strong>.</li>
+      <li>Open the account menu (<code>…</code>) for the connected Facebook, Instagram, Threads, Pinterest, LinkedIn, X, TikTok, or YouTube account and choose <strong>Disconnect</strong>.</li>
+      <li>SocialForge immediately removes the associated access and refresh tokens from your local <strong>macOS Keychain</strong>.</li>
+    </ol>
+
+    <h2>2. Revoke Access on the Social Platform</h2>
+    <ul>
+      <li><strong>Facebook &amp; Instagram:</strong> Visit Facebook <em>Settings &amp; Privacy › Settings › Business Integrations</em> (or <em>Apps and Websites</em>) and remove SocialForge.</li>
+      <li><strong>Threads:</strong> Open Threads <em>Settings › Account › Website permissions</em> and remove SocialForge.</li>
+      <li><strong>Pinterest:</strong> Open Pinterest <em>Settings › Security › Connected apps</em> and revoke access.</li>
+      <li><strong>LinkedIn:</strong> Open LinkedIn <em>Settings › Data privacy › Permitted services</em> and remove SocialForge.</li>
+      <li><strong>Google / YouTube:</strong> Visit <a href="https://myaccount.google.com/permissions">myaccount.google.com/permissions</a> and remove SocialForge.</li>
+      <li><strong>X &amp; TikTok:</strong> Revoke SocialForge under <em>Connected Apps</em> in your account security settings.</li>
+    </ul>
+
+    <h2>3. Delete All Local Application Data</h2>
+    <ol>
+      <li>Quit SocialForge.</li>
+      <li>Move <code>~/Library/Application Support/SocialForge/</code> and <code>~/Library/Caches/com.socialforge.app/</code> to the Trash.</li>
+      <li>Remove any remaining <code>com.socialforge.app</code> entries in macOS <strong>Keychain Access</strong>.</li>
+    </ol>
+
+    <h2>Need Confirmation?</h2>
+    <p>Because we store zero remote user data, disconnecting and deleting local files removes 100% of your data immediately. If you would like written confirmation or assistance, email <a href="mailto:mclainr@gmail.com">mclainr@gmail.com</a>.</p>
+  </main>
+</div>
+</body>
+</html>

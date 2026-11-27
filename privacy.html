@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>Privacy Policy — SocialForge</title>
+<link rel="icon" href="assets/icon.png">
+<style>
+:root { color-scheme: dark light; --bg: #0f0f13; --card: #19191e; --stroke: rgba(255,255,255,.1); --text: #f1f1f5; --text2: #a0a0ab; --accent: #ff8a5c; }
+@media (prefers-color-scheme: light) { :root { --bg: #f4efe9; --card: #fbf8f5; --stroke: rgba(0,0,0,.09); --text: #1c1b1f; --text2: #616068; --accent: #d95b26; } }
+* { box-sizing: border-box; }
+body { margin: 0; padding: 40px 20px 72px; background: var(--bg); color: var(--text); font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+.wrap { max-width: 780px; margin: 0 auto; }
+nav { display: flex; gap: 16px; align-items: center; margin-bottom: 28px; font-size: 14px; }
+nav a { color: var(--text2); text-decoration: none; }
+nav a:hover, a { color: var(--accent); text-decoration: none; }
+a:hover { text-decoration: underline; }
+.card { background: var(--card); border: 1px solid var(--stroke); border-radius: 16px; padding: 32px; }
+h1 { margin: 0 0 6px; font-size: 30px; font-weight: 680; }
+h2 { margin: 28px 0 8px; font-size: 18px; font-weight: 650; }
+p, li { color: var(--text2); }
+strong { color: var(--text); }
+ul { padding-left: 20px; }
+li { margin: 6px 0; }
+.meta { font-size: 13.5px; color: var(--text2); margin-bottom: 22px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <nav>
+    <a href="./">← SocialForge Home</a>
+    <a href="privacy.html">Privacy Policy</a>
+    <a href="terms.html">Terms of Service</a>
+    <a href="data-deletion.html">Data Deletion</a>
+  </nav>
+  <main class="card">
+    <h1>Privacy Policy</h1>
+    <p class="meta"><strong>Effective Date:</strong> November 27, 2026 · <strong>Application:</strong> SocialForge for macOS &amp; SocialForge Stateless OAuth Relay</p>
+
+    <p>SocialForge is a local-first macOS application for creating, organizing, and scheduling social media content. We designed SocialForge so that your media library, drafts, schedules, and credentials stay on your Mac — not on our servers.</p>
+
+    <h2>1. Information We Do Not Collect</h2>
+    <ul>
+      <li><strong>No SocialForge cloud account:</strong> SocialForge does not require registration, login, analytics tracking, or advertising SDKs.</li>
+      <li><strong>No remote storage of your content or tokens:</strong> We do not operate a central database of user profiles, media files, posts, drafts, or social platform access tokens.</li>
+      <li><strong>No sale or sharing of data:</strong> We never sell, rent, or share user data with third parties or data brokers.</li>
+    </ul>
+
+    <h2>2. Data Stored Locally on Your Mac</h2>
+    <p>When you use SocialForge, all application data is stored locally on your device:</p>
+    <ul>
+      <li><strong>Media, drafts, schedules, and brand kits:</strong> Stored locally in your Mac's Application Support directory (<code>~/Library/Application Support/SocialForge/</code>) or a brand folder you choose. Original imported files are never modified.</li>
+      <li><strong>OAuth tokens and API keys:</strong> Stored locally in your encrypted <strong>macOS Keychain</strong>.</li>
+    </ul>
+
+    <h2>3. How Social Platform Connections &amp; the Stateless OAuth Relay Work</h2>
+    <p>When you choose to connect a social media account (such as Pinterest, Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, or YouTube), SocialForge accesses only the minimum permissions you explicitly approve during OAuth authorization:</p>
+    <ul>
+      <li><strong>Account &amp; destination discovery:</strong> Reading your connected profile name/handle and available publishing destinations (such as Pinterest boards, Facebook Pages, linked Instagram professional accounts, LinkedIn organizations, or YouTube channels) so you can choose where to publish.</li>
+      <li><strong>Publishing explicitly approved content:</strong> Uploading media and creating posts only when you explicitly approve and schedule or trigger publication.</li>
+      <li><strong>Stateless OAuth Relay (<code>socialforge-oauth-relay.vercel.app</code>):</strong> If you use One-Click Sign In via our optional hosted OAuth relay on Vercel, the relay receives only the temporary OAuth authorization code or refresh token needed to exchange/refresh credentials with the official social platform API over HTTPS (TLS). The relay is completely stateless, sets <code>Cache-Control: no-store</code> and <code>Referrer-Policy: no-referrer</code>, and immediately discards all tokens once returned directly to your Mac's Keychain.</li>
+      <li><strong>Bring-Your-Own-Credentials (BYOK):</strong> Alternatively, you may connect using your own developer app credentials, in which case OAuth exchanges happen directly between your Mac and the platform's API.</li>
+    </ul>
+
+    <h2>4. Google API Services User Data Policy (YouTube)</h2>
+    <p>When you connect a YouTube channel, SocialForge requests only the <code>youtube.readonly</code> (to list your channels) and <code>youtube.upload</code> (to upload videos/Shorts you explicitly approve) scopes. <strong>SocialForge's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</strong> Google/YouTube user data is never used to train generalized AI/ML models and is never stored on SocialForge servers.</p>
+
+    <h2>5. Optional Third-Party AI &amp; Media Storage</h2>
+    <ul>
+      <li><strong>Local AI (Ollama, LM Studio, ComfyUI):</strong> Requests remain on your local machine or private local network.</li>
+      <li><strong>Cloud AI (OpenAI, Anthropic, Google Gemini):</strong> Used only if you enter your own API key and invoke AI features. Text or media is sent directly from your Mac to the provider you chose under their respective privacy policy.</li>
+      <li><strong>Public Media Storage (Cloudflare R2 / S3-compatible):</strong> Used only if you configure your own storage bucket for platforms that require fetching media from an HTTPS URL (such as Instagram photos and Threads media). Uploaded objects use opaque random keys and are deleted automatically once publishing completes or fails.</li>
+    </ul>
+
+    <h2>6. Data Retention, Revocation &amp; Deletion</h2>
+    <p>Because SocialForge stores data locally on your Mac, you have full control at all times. You can disconnect any social account inside <strong>SocialForge › Connections</strong> (which deletes its Keychain tokens), revoke SocialForge directly in your social platform's security/connected-apps settings, or delete all local data at any time. See our <a href="data-deletion.html">Data Deletion Instructions</a> for step-by-step details.</p>
+
+    <h2>7. Changes &amp; Contact</h2>
+    <p>We may update this Privacy Policy as new integrations or legal requirements are added, with the updated effective date listed above. If you have questions or privacy requests, contact us at <a href="mailto:mclainr@gmail.com">mclainr@gmail.com</a> or via <a href="https://github.com/rmclain/socialforge">github.com/rmclain/socialforge</a>.</p>
+  </main>
+</div>
+</body>
+</html>
