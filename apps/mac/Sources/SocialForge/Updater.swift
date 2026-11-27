@@ -31,6 +31,13 @@ enum UpdateSettings {
 final class AppUpdater {
     static let shared = AppUpdater()
 
+    struct Toast: Equatable {
+        let id = UUID()
+        let text: String
+        let symbol: String
+        let isError: Bool
+    }
+
     var available: AppRelease?
     var showSheet = false {
         didSet { if showSheet { message = nil } }
@@ -38,7 +45,24 @@ final class AppUpdater {
     var busy = false
     var progress: String?
     var message: String?
+    var toast: Toast?
     var lastCheckedAt: Date? = UpdateSettings.lastCheck
+    private var toastDismissTask: Task<Void, Never>?
+
+    func showToast(_ text: String, symbol: String = "checkmark.circle.fill", isError: Bool = false) {
+        toastDismissTask?.cancel()
+        toast = Toast(text: text, symbol: symbol, isError: isError)
+        toastDismissTask = Task {
+            try? await Task.sleep(for: .seconds(4))
+            guard !Task.isCancelled else { return }
+            self.toast = nil
+        }
+    }
+
+    func dismissToast() {
+        toastDismissTask?.cancel()
+        toast = nil
+    }
 
     /// Off in tests, snapshots, the background agent, and builds run outside an .app.
     var isEnabled: Bool {
@@ -55,7 +79,11 @@ final class AppUpdater {
 
     func check(userInitiated: Bool) async {
         guard isEnabled, !busy else {
-            if userInitiated && !isEnabled { message = "Updates are off in development and test builds." }
+            if userInitiated && !isEnabled {
+                let msg = "Updates are off in development and test builds."
+                message = msg
+                showToast(msg, symbol: "info.circle.fill", isError: false)
+            }
             return
         }
         busy = true
@@ -74,10 +102,17 @@ final class AppUpdater {
             UserDefaults.standard.set(now, forKey: UpdateSettings.lastCheckKey)
             lastCheckedAt = now
             available = nil
-            if userInitiated { message = "SocialForge \(UpdateSettings.currentVersion) is the newest version (latest release \(latest))." }
+            if userInitiated {
+                let msg = "You're up to date — SocialForge \(UpdateSettings.currentVersion) is the latest version (v\(latest))."
+                message = msg
+                showToast("You're up to date — SocialForge \(UpdateSettings.currentVersion) is the latest version.", symbol: "checkmark.circle.fill", isError: false)
+            }
         case .noDownload(let why), .failed(let why):
             // Do not record lastCheck on failed/rate-limited checks so auto-check can retry cleanly.
-            if userInitiated { message = why }
+            if userInitiated {
+                message = why
+                showToast(why, symbol: "exclamationmark.triangle.fill", isError: true)
+            }
         }
     }
 
@@ -229,5 +264,41 @@ struct UpdateSettingsView: View {
             }
             if let m = updater.message { Text(m).font(DS.small).foregroundStyle(DS.text2) }
         }
+    }
+}
+
+/// Floating toast shown at the bottom of the main window after a manual update check.
+struct UpdateToastOverlay: View {
+    private var updater: AppUpdater { AppUpdater.shared }
+
+    var body: some View {
+        ZStack {
+            if let toast = updater.toast {
+                HStack(spacing: Space.md) {
+                    Image(systemName: toast.symbol)
+                        .foregroundStyle(toast.isError ? DS.amber : DS.green)
+                    Text(toast.text)
+                        .font(DS.bodyMedium)
+                        .foregroundStyle(DS.text)
+                    Button {
+                        updater.dismissToast()
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(DS.small)
+                            .foregroundStyle(DS.text3)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Dismiss")
+                }
+                .padding(.horizontal, Space.lg)
+                .padding(.vertical, Space.md)
+                .background(DS.panel, in: Capsule())
+                .overlay(Capsule().strokeBorder(DS.strokeStrong))
+                .shadow(color: Color.black.opacity(0.28), radius: 16, y: 8)
+                .padding(.bottom, Space.xl)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.snappy(duration: 0.25), value: updater.toast)
     }
 }

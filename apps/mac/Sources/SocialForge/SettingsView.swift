@@ -178,6 +178,7 @@ struct PublishingSettings: View {
             }
         }
         PlatformsSettingsGroup()
+        OAuthRelaySettingsGroup()
         if model.publishMode == .mac {
             SettingsGroup(title: "Your Pinterest app", footer: "Create an app at developers.pinterest.com and add an HTTPS redirect URI (default: \(MetaSettings.defaultHTTPSRedirect)). After authorizing in your browser, click Copy address and paste it into Finish connecting below. Keys stay in your Keychain.") {
                 TextField("App ID", text: $clientID).fieldStyle().onSubmit { savePinterest() }
@@ -253,6 +254,55 @@ struct PublishingSettings: View {
         if !clean.isEmpty {
             model.token = clean
             token = ""
+        }
+    }
+}
+
+/// Configures the optional stateless Vercel OAuth Relay for One-Click Sign In across all 8 platforms.
+struct OAuthRelaySettingsGroup: View {
+    @Environment(AppModel.self) private var model
+
+    private static let guideURL = URL(string: "https://github.com/rmclain/socialforge/blob/main/docs/OAUTH_RELAY_SETUP.md")!
+
+    var body: some View {
+        @Bindable var model = model
+        SettingsGroup(
+            title: "One-Click OAuth Relay (Vercel · Stateless)",
+            footer: "Optional HTTPS relay deployed from services/oauth-relay on Vercel's free tier. Users connect platforms in one click without creating developer apps; the relay stores zero tokens and returns credentials straight into your macOS Keychain."
+        ) {
+            TextField("https://your-relay.vercel.app", text: $model.oauthRelayURLString)
+                .fieldStyle()
+                .font(DS.mono)
+                .onSubmit { Task { await model.checkOAuthRelay() } }
+            HStack(spacing: Space.md) {
+                Button("Test & Discover Providers") {
+                    Task { await model.checkOAuthRelay() }
+                }
+                .buttonStyle(SecondaryButtonStyle())
+                .disabled(model.oauthRelayURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                switch model.oauthRelayStatus {
+                case .unconfigured:
+                    Text("Not configured (BYOK mode)").font(DS.small).foregroundStyle(DS.text3)
+                case .checking:
+                    ProgressView().controlSize(.small)
+                case .ready(let count):
+                    StatusDot(text: "Connected · \(count) platform\(count == 1 ? "" : "s") enabled", color: DS.green)
+                case .error(let msg):
+                    StatusDot(text: msg, color: DS.red)
+                }
+                Spacer()
+                Link("Vercel setup guide", destination: Self.guideURL).font(DS.small)
+            }
+            if let caps = model.oauthRelayCapabilities {
+                let enabled = caps.providers.filter(\.enabled)
+                if enabled.isEmpty {
+                    Text("Relay is reachable, but no platform environment variables are set on Vercel yet.")
+                        .font(DS.small).foregroundStyle(DS.amber)
+                } else {
+                    Text("One-Click enabled: " + enabled.map(\.displayName).joined(separator: ", "))
+                        .font(DS.small).foregroundStyle(DS.text2)
+                }
+            }
         }
     }
 }

@@ -45,6 +45,7 @@ struct ContentView: View {
         .sheet(isPresented: Binding(get: { AppUpdater.shared.showSheet }, set: { AppUpdater.shared.showSheet = $0 })) {
             if let r = AppUpdater.shared.available { UpdateSheet(release: r) }
         }
+        .overlay(alignment: .bottom) { UpdateToastOverlay() }
         .alert("Something went wrong", isPresented: Binding(get: { model.lastError != nil }, set: { if !$0 { model.lastError = nil } })) {
             Button("OK") { model.lastError = nil }
         } message: {

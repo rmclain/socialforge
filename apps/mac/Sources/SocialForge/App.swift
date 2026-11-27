@@ -38,6 +38,9 @@ struct SocialForgeApp: App {
                 .themed()
                 .overlay { if GridOverlay.enabled { GridOverlay() } }
                 .frame(minWidth: 1180, minHeight: 720)
+                .onOpenURL { url in
+                    Task { await model.handleIncomingOAuthURL(url) }
+                }
         }
         .modelContainer(model.container)
         .defaultSize(width: 1480, height: 940)

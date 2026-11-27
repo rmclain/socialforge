@@ -37,6 +37,11 @@ struct AccountsView: View {
             }
             .padding(Space.xxl)
         }
+        .task {
+            if !model.oauthRelayURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && model.oauthRelayCapabilities == nil {
+                await model.checkOAuthRelay()
+            }
+        }
         .sheet(item: Binding(
             get: { wizardPlatform.map(WizardTarget.init(platform:)) },
             set: { wizardPlatform = $0?.platform }
@@ -64,6 +69,9 @@ struct AccountsView: View {
                 Task {
                     await model.refreshAccounts()
                     await model.checkComfy()
+                    if !model.oauthRelayURLString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        await model.checkOAuthRelay()
+                    }
                     if model.publishMode == .service { await model.checkBackend() }
                     refreshing = false
                 }
@@ -100,8 +108,16 @@ struct AccountsView: View {
             }
         }
         VStack(alignment: .leading, spacing: Space.xs) {
-            Text("Platform setup & wizards").font(.system(size: 15, weight: .semibold))
-            Text("SocialForge connects directly through your own developer app on each platform. Pick any platform to open its guided setup wizard.")
+            HStack {
+                Text("Platform setup & wizards").font(.system(size: 15, weight: .semibold))
+                Spacer()
+                if case .ready(let count) = model.oauthRelayStatus, count > 0 {
+                    StatusDot(text: "One-Click Relay active · \(count) platform\(count == 1 ? "" : "s")", color: DS.green)
+                } else {
+                    Button("Configure One-Click Relay…") { category = .publishingInfra }.buttonStyle(LinkButtonStyle())
+                }
+            }
+            Text("Connect in one click via a hosted stateless OAuth Relay (Vercel), or bring your own developer app credentials in the macOS Keychain.")
                 .font(DS.body).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
         }
         PlatformKeysList(onConnect: { wizardPlatform = $0 })
@@ -281,6 +297,7 @@ struct ConnectionWizardSheet: View {
     @State private var hasSavedSecret = false
     @State private var pastedCallback = ""
     @State private var authVariant = "default"
+    @State private var connectionMethod = "byok"
     @State private var statusMessage: String?
     @State private var busy = false
     @AppStorage("pinterest.apiBase") private var pinterestBase = "https://api.pinterest.com"
@@ -288,6 +305,7 @@ struct ConnectionWizardSheet: View {
 
     private var spec: PlatformSpec? { PlatformRegistry.spec(platform) }
     private var keys: PlatformKeys? { PlatformKeys.forPlatform(platform) }
+    private var relayAvailable: Bool { model.relaySupports(platform: platform, authVariant: authVariant) }
 
     private var idKeychainItem: String {
         switch platform {
@@ -346,6 +364,45 @@ struct ConnectionWizardSheet: View {
                     if let spec {
                         Text(PlatformStatus.summary(spec)).font(DS.body).foregroundStyle(DS.textBody)
                     }
+                    if relayAvailable {
+                        PillPicker(options: ["relay", "byok"], selection: $connectionMethod) {
+                            $0 == "relay" ? "One-Click Sign In (Relay)" : "My Own Developer App (BYOK)"
+                        }
+                    }
+
+                    if connectionMethod == "relay" && relayAvailable {
+                        VStack(alignment: .leading, spacing: Space.md) {
+                            SectionLabel("One-Click Sign In via Stateless OAuth Relay")
+                            Text("No developer app required. Your browser opens \(spec?.name ?? platform.capitalized), asks you to approve access, and bounces directly back into SocialForge. Your tokens are saved only in your local macOS Keychain — the relay stores nothing.")
+                                .font(DS.body).foregroundStyle(DS.text2).fixedSize(horizontal: false, vertical: true)
+                            if platform == "pinterest" {
+                                PillPicker(options: ["https://api.pinterest.com", "https://api-sandbox.pinterest.com"], selection: $pinterestBase) {
+                                    $0.contains("sandbox") ? "Sandbox (Trial)" : "Production (Standard)"
+                                }
+                            } else if platform == "instagram" {
+                                PillPicker(options: ["facebook_login", "instagram_login"], selection: $authVariant) {
+                                    $0 == "instagram_login" ? "Direct Instagram Login" : "Facebook Login (Linked Page)"
+                                }
+                            } else if platform == "linkedin" {
+                                PillPicker(options: ["default", "organization"], selection: $authVariant) {
+                                    $0 == "organization" ? "Personal + Company Pages" : "Personal Profile Only"
+                                }
+                            }
+                            Button(busy ? "Opening browser…" : "Continue with \(spec?.name ?? platform.capitalized)") {
+                                busy = true
+                                statusMessage = nil
+                                Task {
+                                    await model.connectViaRelay(platform, authMode: authVariant)
+                                    busy = false
+                                    if let err = model.lastError { statusMessage = err }
+                                    else if let msg = model.metaMessage { statusMessage = msg }
+                                }
+                            }
+                            .buttonStyle(PrimaryButtonStyle())
+                            .disabled(busy)
+                        }
+                        .card()
+                    } else {
                     if let keys {
                         VStack(alignment: .leading, spacing: Space.sm) {
                             SectionLabel("1. Developer Console Prerequisites")
@@ -371,7 +428,7 @@ struct ConnectionWizardSheet: View {
                                 }
                                 .buttonStyle(SecondaryButtonStyle())
                             }
-                            Text("Pinterest requires an HTTPS redirect URI. After approving in your browser, click Copy address on the callback page and paste it in Step 4 below.")
+                            Text("Pinterest requires an HTTPS redirect URI. After approving in your browser, click Open SocialForge or Copy address on the callback page.")
                                 .font(DS.small).foregroundStyle(DS.text2)
                         } else {
                             HStack {
@@ -416,6 +473,7 @@ struct ConnectionWizardSheet: View {
                         }
                     }
                     .card()
+                    }
 
                     if let pending = model.pendingOAuth {
                         VStack(alignment: .leading, spacing: Space.sm) {
@@ -451,8 +509,14 @@ struct ConnectionWizardSheet: View {
         .frame(width: 620, height: 640)
         .background(DS.panel)
         .noInitialFocus()
-        .onAppear { loadCredentials() }
-        .onChange(of: authVariant) { _, _ in loadCredentials() }
+        .onAppear {
+            loadCredentials()
+            connectionMethod = relayAvailable ? "relay" : "byok"
+        }
+        .onChange(of: authVariant) { _, _ in
+            loadCredentials()
+            if !relayAvailable && connectionMethod == "relay" { connectionMethod = "byok" }
+        }
     }
 
     private func loadCredentials() {
@@ -589,8 +653,17 @@ struct PlatformKeysList: View {
             }
             Spacer(minLength: Space.md)
             VStack(alignment: .trailing, spacing: Space.sm) {
-                Button("Setup Wizard…") { onConnect?(keys.platform) }
+                if model.relaySupports(platform: keys.platform) {
+                    Button("One-Click Connect") {
+                        Task { await model.connectViaRelay(keys.platform) }
+                    }
                     .buttonStyle(PrimaryButtonStyle())
+                    Button("BYOK Wizard…") { onConnect?(keys.platform) }
+                        .buttonStyle(SecondaryButtonStyle())
+                } else {
+                    Button("Setup Wizard…") { onConnect?(keys.platform) }
+                        .buttonStyle(PrimaryButtonStyle())
+                }
                 HStack(spacing: Space.md) {
                     Link("Console", destination: keys.portal).buttonStyle(LinkButtonStyle())
                     Link("Guide", destination: keys.guide).buttonStyle(LinkButtonStyle())

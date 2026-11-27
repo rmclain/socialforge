@@ -201,10 +201,29 @@ final class PublishRunner {
 
         do {
             let refreshed = try await tokenManager.refresh(credentialKey: tokenKey, operation: {
+                // Relay-authenticated accounts refresh statelessly via the configured OAuth Relay.
+                if authMode.hasPrefix("relay"), let relayURL = OAuthRelaySettings.configuredURL {
+                    let client = try OAuthRelayClient(baseURL: relayURL)
+                    let relayPlatform = (platform == "instagram" && authMode.contains("instagram_login")) ? "instagram_login" : platform
+                    let isSandbox = authMode.contains("sandbox")
+                    let t = try await client.refresh(
+                        platform: relayPlatform,
+                        refreshToken: refreshSecret,
+                        accessToken: existing,
+                        sandbox: isSandbox
+                    )
+                    return RefreshedToken(
+                        accessToken: t.accessToken,
+                        refreshToken: t.refreshToken,
+                        expiresAt: t.expiresIn.map { Date.now.addingTimeInterval(TimeInterval($0)) },
+                        scopes: t.scopeList.isEmpty ? nil : t.scopeList
+                    )
+                }
+
                 switch platform {
                 case "pinterest":
                     guard let rt = refreshSecret, !rt.isEmpty,
-                          let clientID = UserDefaults.standard.string(forKey: "pinterest.clientID"), !clientID.isEmpty,
+                          let clientID = Keychain.read("pinterest.clientID") ?? UserDefaults.standard.string(forKey: "pinterest.clientID"), !clientID.isEmpty,
                           let secret = Keychain.read("pinterest.clientSecret"), !secret.isEmpty else {
                         throw PublishFailure(.auth, "Pinterest refresh credentials unavailable.")
                     }
@@ -223,7 +242,7 @@ final class PublishRunner {
                     return RefreshedToken(accessToken: t.token, expiresAt: t.expiresIn.map { Date.now.addingTimeInterval(TimeInterval($0)) })
                 case "linkedin":
                     guard let rt = refreshSecret, !rt.isEmpty,
-                          let cid = UserDefaults.standard.string(forKey: "linkedin.clientID"),
+                          let cid = Keychain.read("linkedin.clientID") ?? UserDefaults.standard.string(forKey: "linkedin.clientID"),
                           let cs = Keychain.read("linkedin.clientSecret") else {
                         throw PublishFailure(.auth, "LinkedIn refresh credentials unavailable.")
                     }
@@ -232,7 +251,7 @@ final class PublishRunner {
                                           expiresAt: t.expiresIn.map { Date.now.addingTimeInterval(TimeInterval($0)) }, scopes: t.scopes)
                 case "x":
                     guard let rt = refreshSecret, !rt.isEmpty,
-                          let cid = UserDefaults.standard.string(forKey: "x.clientID") else {
+                          let cid = Keychain.read("x.clientID") ?? UserDefaults.standard.string(forKey: "x.clientID") else {
                         throw PublishFailure(.auth, "X refresh credentials unavailable.")
                     }
                     let t = try await XAuth().refresh(rt, clientID: cid, clientSecret: Keychain.read("x.clientSecret"))
@@ -240,7 +259,7 @@ final class PublishRunner {
                                           expiresAt: t.expiresIn.map { Date.now.addingTimeInterval(TimeInterval($0)) }, scopes: t.scopes)
                 case "tiktok":
                     guard let rt = refreshSecret, !rt.isEmpty,
-                          let ck = UserDefaults.standard.string(forKey: "tiktok.clientKey"),
+                          let ck = Keychain.read("tiktok.clientKey") ?? UserDefaults.standard.string(forKey: "tiktok.clientKey"),
                           let cs = Keychain.read("tiktok.clientSecret") else {
                         throw PublishFailure(.auth, "TikTok refresh credentials unavailable.")
                     }
@@ -249,7 +268,7 @@ final class PublishRunner {
                                           expiresAt: t.expiresIn.map { Date.now.addingTimeInterval(TimeInterval($0)) }, scopes: t.scopes)
                 case "youtube":
                     guard let rt = refreshSecret, !rt.isEmpty,
-                          let cid = UserDefaults.standard.string(forKey: "youtube.clientID") else {
+                          let cid = Keychain.read("youtube.clientID") ?? UserDefaults.standard.string(forKey: "youtube.clientID") else {
                         throw PublishFailure(.auth, "YouTube refresh credentials unavailable.")
                     }
                     let t = try await YouTubeAuth().refresh(rt, clientID: cid, clientSecret: Keychain.read("youtube.clientSecret"))

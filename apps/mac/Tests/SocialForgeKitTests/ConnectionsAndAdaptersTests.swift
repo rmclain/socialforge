@@ -249,6 +249,55 @@ struct ConnectionsAndAdaptersTests {
         #expect(!AppVersion.isNewer("1.2.0-beta", than: "1.2.0"))
         #expect(AppVersion.isNewer("1.2.0-rc2", than: "1.2.0-rc1"))
     }
+
+    @Test func oauthRelayClientDiscoversExchangesRefreshesAndValidatesCallback() async throws {
+        // Remote plain HTTP relay URL must be rejected.
+        #expect(throws: OAuthRelayError.self) {
+            _ = try OAuthRelayClient(baseURL: URL(string: "http://relay.example.com")!)
+        }
+
+        let stub = HTTPStub.make { req, _ in
+            let path = req.url?.path ?? ""
+            if path.hasSuffix("/api/providers") {
+                return (200, Data("""
+                {"service":"socialforge-oauth-relay","version":"1.0.0","stateless":true,"origin":"https://relay.example","providers":[
+                  {"platform":"pinterest","displayName":"Pinterest","enabled":true,"redirectURI":"https://relay.example/api/oauth/callback/pinterest","pkceRequired":false,"supportsRefresh":true,"scopes":["pins:write"]},
+                  {"platform":"x","displayName":"X","enabled":false,"redirectURI":"https://relay.example/api/oauth/callback/x","pkceRequired":true,"supportsRefresh":true,"scopes":["tweet.write"]}
+                ]}
+                """.utf8))
+            }
+            if path.hasSuffix("/api/oauth/exchange") {
+                return (200, Data(#"{"access_token":"rel_acc","refresh_token":"rel_ref","expires_in":3600,"scope":"pins:write"}"#.utf8))
+            }
+            if path.hasSuffix("/api/oauth/refresh") {
+                return (200, Data(#"{"access_token":"rel_acc_2","refresh_token":"rel_ref_2","expires_in":7200}"#.utf8))
+            }
+            return (404, Data(#"{"error":"not found"}"#.utf8))
+        }
+        let client = try OAuthRelayClient(baseURL: URL(string: "https://\(stub.base.host ?? "127.0.0.1")")!, session: stub.session)
+        let caps = try await client.fetchCapabilities()
+        #expect(caps.isEnabled("pinterest"))
+        #expect(!caps.isEnabled("x"))
+
+        let start = client.startURL(platform: "x", state: "state-abc", codeChallenge: "chall-xyz")
+        #expect(start.absoluteString.contains("platform=x") && start.absoluteString.contains("code_challenge=chall-xyz"))
+
+        let tok = try await client.exchange(platform: "pinterest", code: "c1", redirectURI: "https://relay.example/api/oauth/callback/pinterest")
+        #expect(tok.accessToken == "rel_acc" && tok.refreshToken == "rel_ref")
+
+        let ref = try await client.refresh(platform: "pinterest", refreshToken: "rel_ref")
+        #expect(ref.accessToken == "rel_acc_2" && ref.refreshToken == "rel_ref_2")
+
+        // Deep-link callback parsing & state enforcement
+        let goodURL = URL(string: "socialforge://oauth/callback?platform=pinterest&code=xyz99&state=st-1&relay=1")!
+        let parsed = try OAuthRelayClient.parseCallbackURL(goodURL, expectedState: "st-1")
+        #expect(parsed.platform == "pinterest" && parsed.code == "xyz99" && parsed.viaRelay)
+
+        let badStateURL = URL(string: "socialforge://oauth/callback?platform=pinterest&code=xyz99&state=wrong&relay=1")!
+        #expect(throws: OAuthRelayError.stateMismatch) {
+            _ = try OAuthRelayClient.parseCallbackURL(badStateURL, expectedState: "st-1")
+        }
+    }
 }
 
 final class TokenRecorder: @unchecked Sendable {

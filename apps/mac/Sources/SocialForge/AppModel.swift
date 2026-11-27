@@ -70,10 +70,27 @@ final class AppModel {
     var variantProgress: (done: Int, total: Int)?
     var busyMessage: String?
     var lastError: String?
-    /// A manual-callback OAuth sign-in waiting for the address the browser landed on.
+    /// A manual-callback or relay OAuth sign-in waiting for the browser callback.
     var pendingOAuth: PendingOAuth?
     var metaMessage: String?
     var publicMediaVerification: PublicMediaVerification?
+
+    // Hosted stateless OAuth Relay (e.g. Vercel).
+    var oauthRelayURLString: String = OAuthRelaySettings.initialURL {
+        didSet {
+            if !Store.isOverridden {
+                UserDefaults.standard.set(oauthRelayURLString.trimmingCharacters(in: .whitespacesAndNewlines), forKey: OAuthRelaySettings.urlKey)
+            }
+        }
+    }
+    var oauthRelayStatus: OAuthRelayStatus = .unconfigured
+    var oauthRelayCapabilities: OAuthRelayCapabilities?
+
+    enum OAuthRelayStatus: Equatable {
+        case unconfigured, checking
+        case ready(enabledCount: Int)
+        case error(String)
+    }
 
     // Publishing service.
     var backendURLString: String {
