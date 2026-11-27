@@ -5,6 +5,7 @@ import {
   handleExchange,
   handleHealth,
   handleHome,
+  handleLegal,
   handleProviders,
   handleRefresh,
   handleStart,
@@ -261,5 +262,21 @@ describe('SocialForge Stateless OAuth Relay', () => {
     assert.ok(body.includes('SocialForge OAuth Relay'));
     assert.ok(body.includes(`${BASE}/api/oauth/callback/pinterest`));
     assert.ok(!body.includes('pin-secret-xyz'));
+  });
+
+  it('serves Privacy Policy, Terms of Service, and Data Deletion pages with required disclosures', async () => {
+    const priv = await handleLegal(new Request(`${BASE}/privacy`), 'privacy');
+    assert.equal(priv.status, 200);
+    const privText = await priv.text();
+    assert.ok(privText.includes('Google API Services User Data Policy'));
+    assert.ok(privText.includes('Limited Use'));
+
+    const terms = await handleLegal(new Request(`${BASE}/terms`), 'terms');
+    assert.equal(terms.status, 200);
+    assert.ok((await terms.text()).includes('Terms of Service'));
+
+    const del = await handleLegal(new Request(`${BASE}/data-deletion`), 'data-deletion');
+    assert.equal(del.status, 200);
+    assert.ok((await del.text()).includes('User Data Deletion Instructions'));
   });
 });

@@ -229,6 +229,12 @@ export async function handleHome(request: Request, ctx: RelayContext = defaultCt
       <thead><tr><th>Platform</th><th>Status</th><th>HTTPS Callback URL</th><th>Required Vercel Env Vars</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
+    <p class="muted" style="margin:14px 0 0">
+      <a href="/privacy" style="color:var(--accent);text-decoration:none;margin-right:14px">Privacy Policy</a>
+      <a href="/terms" style="color:var(--accent);text-decoration:none;margin-right:14px">Terms of Service</a>
+      <a href="/data-deletion" style="color:var(--accent);text-decoration:none;margin-right:14px">Data Deletion</a>
+      <a href="https://rmclain.github.io/socialforge/" style="color:var(--text2);text-decoration:none">SocialForge Home</a>
+    </p>
   </div>
 </div>
 <script>
@@ -245,6 +251,84 @@ document.getElementById("run-test").addEventListener("click", function () {
 </body>
 </html>`;
   return html(page, 200);
+}
+
+// MARK: - GET /privacy, /terms, /data-deletion
+
+export async function handleLegal(request: Request, doc: string): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+  const key = doc.trim().toLowerCase();
+  const styles = `
+  :root { color-scheme: dark light; --bg: #0f0f13; --card: #19191e; --stroke: rgba(255,255,255,.1); --text: #f1f1f5; --text2: #a0a0ab; --accent: #ff8a5c; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4efe9; --card: #fbf8f5; --stroke: rgba(0,0,0,.09); --text: #1c1b1f; --text2: #616068; --accent: #d95b26; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 40px 20px 72px; background: var(--bg); color: var(--text); font: 15.5px/1.65 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  .wrap { max-width: 780px; margin: 0 auto; }
+  nav { display: flex; gap: 16px; align-items: center; margin-bottom: 24px; font-size: 14px; flex-wrap: wrap; }
+  nav a, a { color: var(--accent); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .card { background: var(--card); border: 1px solid var(--stroke); border-radius: 16px; padding: 32px; }
+  h1 { margin: 0 0 6px; font-size: 28px; font-weight: 680; }
+  h2 { margin: 26px 0 8px; font-size: 17.5px; font-weight: 650; }
+  p, li { color: var(--text2); }
+  strong { color: var(--text); }
+  ul, ol { padding-left: 20px; }
+  li { margin: 6px 0; }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 13px; }`;
+
+  const nav = `<nav><a href="/">← OAuth Relay Status</a><a href="/privacy">Privacy Policy</a><a href="/terms">Terms of Service</a><a href="/data-deletion">Data Deletion</a><a href="https://rmclain.github.io/socialforge/">SocialForge Home</a></nav>`;
+
+  let title: string;
+  let body: string;
+
+  if (key === 'privacy') {
+    title = 'Privacy Policy — SocialForge';
+    body = `<h1>Privacy Policy</h1>
+    <p><strong>Effective Date:</strong> November 27, 2026 · <strong>Application:</strong> SocialForge for macOS &amp; SocialForge Stateless OAuth Relay</p>
+    <p>SocialForge is a local-first macOS application for creating, organizing, and scheduling social media content. Your media library, drafts, schedules, and credentials stay on your Mac — not on our servers.</p>
+    <h2>1. Information We Do Not Collect</h2>
+    <ul>
+      <li><strong>No cloud account or tracking:</strong> SocialForge requires no registration, analytics tracking, or advertising SDKs.</li>
+      <li><strong>No remote storage of content or tokens:</strong> We do not operate a database of user profiles, media, drafts, or OAuth tokens.</li>
+      <li><strong>No sale or sharing of data:</strong> We never sell, rent, or share user data with third parties.</li>
+    </ul>
+    <h2>2. Data Stored Locally on Your Mac</h2>
+    <p>Media, drafts, schedules, and brand kits live locally in <code>~/Library/Application Support/SocialForge/</code> (or your chosen brand folder). OAuth tokens and API keys are stored exclusively in your encrypted <strong>macOS Keychain</strong>.</p>
+    <h2>3. Social Platform Connections &amp; Stateless OAuth Relay</h2>
+    <p>When you connect Pinterest, Facebook Pages, Instagram, Threads, LinkedIn, X, TikTok, or YouTube, SocialForge accesses only the scopes you approve to list accounts/boards/channels and publish content you explicitly approve. Our optional Vercel OAuth relay (<code>socialforge-oauth-relay.vercel.app</code>) is strictly stateless (<code>Cache-Control: no-store</code>, <code>Referrer-Policy: no-referrer</code>): it exchanges single-use OAuth codes and refreshes tokens over TLS, returns them directly to your Mac Keychain, and stores nothing.</p>
+    <h2>4. Google API Services User Data Policy (YouTube)</h2>
+    <p>For YouTube, SocialForge requests only <code>youtube.readonly</code> and <code>youtube.upload</code>. <strong>SocialForge's use and transfer to any other app of information received from Google APIs will adhere to the <a href="https://developers.google.com/terms/api-services-user-data-policy">Google API Services User Data Policy</a>, including the Limited Use requirements.</strong> Google/YouTube data is never used to train AI/ML models and is never stored on SocialForge servers.</p>
+    <h2>5. Third-Party AI &amp; Media Storage</h2>
+    <p>Local AI (Ollama, LM Studio, ComfyUI) stays on your local network. Optional cloud AI (OpenAI, Anthropic, Google Gemini) and S3/R2 public media storage use your own credentials directly from your Mac; temporary S3/R2 objects are deleted automatically after publishing.</p>
+    <h2>6. Revocation, Data Deletion &amp; Contact</h2>
+    <p>Disconnect any account in <strong>SocialForge › Connections</strong> or revoke access in the platform's connected-apps settings at any time. See <a href="/data-deletion">Data Deletion Instructions</a>. Contact: <a href="mailto:mclainr@gmail.com">mclainr@gmail.com</a>.</p>`;
+  } else if (key === 'terms') {
+    title = 'Terms of Service — SocialForge';
+    body = `<h1>Terms of Service</h1>
+    <p><strong>Effective Date:</strong> November 27, 2026 · <strong>Application:</strong> SocialForge for macOS &amp; SocialForge Stateless OAuth Relay</p>
+    <p>By using SocialForge or its optional stateless OAuth Relay, you agree to these terms.</p>
+    <h2>1. User Responsibility &amp; Platform Compliance</h2>
+    <p>You retain full ownership and responsibility for all content you create or publish. You agree to review and approve posts before publishing and comply with the Terms of Service and policies of each connected platform (including YouTube's <a href="https://www.youtube.com/t/terms">Terms of Service</a>, Meta, Pinterest, LinkedIn, X, and TikTok).</p>
+    <h2>2. Third-Party APIs &amp; Disclaimer</h2>
+    <p>SocialForge and the stateless OAuth Relay are provided <strong>"AS IS"</strong> and <strong>"AS AVAILABLE"</strong> without warranties of any kind. Third-party platform availability, rate limits, and API permissions are controlled by their respective providers.</p>
+    <h2>3. Contact</h2>
+    <p>Questions: <a href="mailto:mclainr@gmail.com">mclainr@gmail.com</a> · Source: <a href="https://github.com/rmclain/socialforge">github.com/rmclain/socialforge</a>.</p>`;
+  } else if (key === 'data-deletion') {
+    title = 'Data Deletion Instructions — SocialForge';
+    body = `<h1>User Data Deletion Instructions</h1>
+    <p>SocialForge is a local-first macOS application with a stateless OAuth relay. We store <strong>zero user data on remote servers</strong>.</p>
+    <h2>How to Delete Your Data</h2>
+    <ol>
+      <li><strong>Disconnect inside SocialForge:</strong> Open <strong>Connections › Social Accounts</strong>, open the account menu (<code>…</code>), and click <strong>Disconnect</strong> to remove its tokens from your macOS Keychain.</li>
+      <li><strong>Revoke on the platform:</strong> Remove SocialForge in Facebook/Instagram <em>Business Integrations</em>, Threads <em>Website permissions</em>, Pinterest <em>Connected apps</em>, LinkedIn <em>Permitted services</em>, <a href="https://myaccount.google.com/permissions">Google Permissions</a>, X, or TikTok security settings.</li>
+      <li><strong>Delete local files:</strong> Quit SocialForge and move <code>~/Library/Application Support/SocialForge/</code> and <code>~/Library/Caches/com.socialforge.app/</code> to the Trash.</li>
+    </ol>
+    <p>For written confirmation or assistance, email <a href="mailto:mclainr@gmail.com">mclainr@gmail.com</a>.</p>`;
+  } else {
+    return json({ error: 'Not found' }, 404);
+  }
+
+  return html(`<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHTML(title)}</title><style>${styles}</style></head><body><div class="wrap">${nav}<main class="card">${body}</main></div></body></html>`, 200);
 }
 
 // MARK: - GET /api/providers
