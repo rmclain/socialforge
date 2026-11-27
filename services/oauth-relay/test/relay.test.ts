@@ -4,9 +4,11 @@ import {
   handleCallback,
   handleExchange,
   handleHealth,
+  handleHome,
   handleProviders,
   handleRefresh,
   handleStart,
+  handleTest,
   sanitizeUpstreamError,
   type FetchLike,
 } from '../src/handlers.ts';
@@ -221,5 +223,42 @@ describe('SocialForge Stateless OAuth Relay', () => {
     assert.ok(!cleaned.includes('pin-secret-xyz'));
     assert.ok(!cleaned.includes('abcdefgh12345678'));
     assert.ok(cleaned.includes('[REDACTED]'));
+  });
+
+  it('GET /api/test reports structured platform readiness without leaking secrets and supports callback simulation', async () => {
+    const env = {
+      PUBLIC_ORIGIN: BASE,
+      PINTEREST_CLIENT_ID: 'pin-id',
+      PINTEREST_CLIENT_SECRET: 'top-secret-pin-999',
+    };
+    const res = await handleTest(new Request(`${BASE}/api/test`), { env, fetchImpl: globalThis.fetch });
+    assert.equal(res.status, 200);
+    const raw = await res.text();
+    assert.ok(!raw.includes('top-secret-pin-999'));
+    const body = JSON.parse(raw) as {
+      ok: boolean;
+      summary: { enabledCount: number; totalPlatforms: number; enabledPlatforms: string[] };
+      platforms: Array<{ platform: string; enabled: boolean; missingEnvVars: string[] }>;
+    };
+    assert.equal(body.ok, true);
+    assert.equal(body.summary.enabledCount, 1);
+    assert.deepEqual(body.summary.enabledPlatforms, ['pinterest']);
+    const li = body.platforms.find((p) => p.platform === 'linkedin');
+    assert.equal(li?.enabled, false);
+    assert.deepEqual(li?.missingEnvVars, ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET']);
+
+    const sim = await handleTest(new Request(`${BASE}/api/test?simulate_callback=1`), { env, fetchImpl: globalThis.fetch });
+    assert.equal(sim.status, 200);
+    const simHTML = await sim.text();
+    assert.ok(simHTML.includes('socialforge://oauth/callback'));
+  });
+
+  it('GET / renders the live status dashboard with callback URLs and zero secrets', async () => {
+    const res = await handleHome(new Request(`${BASE}/`), { env: FULL_ENV, fetchImpl: globalThis.fetch });
+    assert.equal(res.status, 200);
+    const body = await res.text();
+    assert.ok(body.includes('SocialForge OAuth Relay'));
+    assert.ok(body.includes(`${BASE}/api/oauth/callback/pinterest`));
+    assert.ok(!body.includes('pin-secret-xyz'));
   });
 });

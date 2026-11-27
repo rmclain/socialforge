@@ -8,7 +8,9 @@ See [docs/OAUTH_RELAY_SETUP.md](../../docs/OAUTH_RELAY_SETUP.md) for the complet
 
 | Endpoint | Method | Purpose |
 |---|---|---|
+| `/` | `GET` | Live status dashboard with per-platform readiness, HTTPS callback URLs, and interactive self-test button |
 | `/api/health` | `GET` | Health & stateless status check |
+| `/api/test` | `GET` | Structured JSON diagnostic & readiness check (`?simulate_callback=1` tests the `socialforge://` deep-link bounce) |
 | `/api/providers` | `GET` | Lists enabled platforms, canonical HTTPS callback URIs, and PKCE flags (never returns secrets) |
 | `/api/oauth/start` | `GET` | Redirects browser (`302`) to the platform's official OAuth authorize screen |
 | `/api/oauth/callback/[platform]` | `GET` | Strips `?code=&state=` from history and bounces the single-use code to `socialforge://oauth/callback` |

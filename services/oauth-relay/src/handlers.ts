@@ -89,6 +89,164 @@ export async function handleHealth(): Promise<Response> {
   });
 }
 
+const REQUIRED_ENV_VARS: Record<RelayPlatform, string[]> = {
+  pinterest: ['PINTEREST_CLIENT_ID', 'PINTEREST_CLIENT_SECRET'],
+  facebook: ['META_APP_ID', 'META_APP_SECRET'],
+  instagram_login: ['INSTAGRAM_APP_ID', 'INSTAGRAM_APP_SECRET'],
+  threads: ['THREADS_APP_ID', 'THREADS_APP_SECRET'],
+  linkedin: ['LINKEDIN_CLIENT_ID', 'LINKEDIN_CLIENT_SECRET'],
+  x: ['X_CLIENT_ID'],
+  tiktok: ['TIKTOK_CLIENT_KEY', 'TIKTOK_CLIENT_SECRET'],
+  youtube: ['YOUTUBE_CLIENT_ID', 'YOUTUBE_CLIENT_SECRET'],
+};
+
+// MARK: - GET /api/test
+
+export async function handleTest(request: Request, ctx: RelayContext = defaultCtx()): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+  const u = new URL(request.url);
+  const origin = resolveOrigin(request, ctx.env);
+
+  if (u.searchParams.get('simulate_callback') === '1') {
+    const testURL = new URL(`${origin}/api/oauth/callback/pinterest`);
+    testURL.searchParams.set('code', 'sf_test_code_only');
+    testURL.searchParams.set('state', 'sf_test_state_1234');
+    return handleCallback(new Request(testURL.toString()), 'pinterest', ctx);
+  }
+
+  const platforms = ALL_PLATFORMS.map((platform) => {
+    const spec = PROVIDERS[platform];
+    const creds = spec.credentials(ctx.env);
+    const missingEnvVars = REQUIRED_ENV_VARS[platform].filter((k) => !(ctx.env[k] ?? '').trim());
+    return {
+      platform,
+      displayName: spec.displayName,
+      enabled: creds !== null,
+      callbackURI: callbackURI(origin, platform),
+      pkceRequired: spec.pkceRequired,
+      supportsRefresh: spec.supportsRefresh,
+      missingEnvVars,
+    };
+  });
+
+  const enabledPlatforms = platforms.filter((p) => p.enabled).map((p) => p.platform);
+  return json({
+    ok: true,
+    service: 'socialforge-oauth-relay',
+    version: '1.0.0',
+    stateless: true,
+    timestamp: new Date().toISOString(),
+    origin,
+    publicOriginConfigured: Boolean((ctx.env.PUBLIC_ORIGIN ?? '').trim()),
+    deepLinkScheme: 'socialforge://oauth/callback',
+    summary: {
+      enabledCount: enabledPlatforms.length,
+      totalPlatforms: platforms.length,
+      enabledPlatforms,
+    },
+    endpoints: {
+      status: `${origin}/`,
+      health: `${origin}/api/health`,
+      providers: `${origin}/api/providers`,
+      test: `${origin}/api/test`,
+      simulateCallback: `${origin}/api/test?simulate_callback=1`,
+    },
+    platforms,
+  });
+}
+
+// MARK: - GET /
+
+export async function handleHome(request: Request, ctx: RelayContext = defaultCtx()): Promise<Response> {
+  if (request.method !== 'GET') return json({ error: 'Method not allowed' }, 405);
+  const origin = resolveOrigin(request, ctx.env);
+  const rows = ALL_PLATFORMS.map((platform) => {
+    const spec = PROVIDERS[platform];
+    const enabled = spec.credentials(ctx.env) !== null;
+    const cb = callbackURI(origin, platform);
+    const envNames = REQUIRED_ENV_VARS[platform].join(', ');
+    return `<tr>
+      <td><strong>${escapeHTML(spec.displayName)}</strong></td>
+      <td><span class="dot ${enabled ? 'on' : 'off'}"></span>${enabled ? 'Enabled' : 'Not configured'}</td>
+      <td><code>${escapeHTML(cb)}</code></td>
+      <td class="muted">${escapeHTML(envNames)}</td>
+    </tr>`;
+  }).join('');
+
+  const enabledCount = ALL_PLATFORMS.filter((p) => PROVIDERS[p].credentials(ctx.env) !== null).length;
+
+  const page = `<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<title>SocialForge OAuth Relay — Status &amp; Diagnostics</title>
+<style>
+  :root { color-scheme: dark light; --bg: #0f0f13; --card: #19191e; --stroke: rgba(255,255,255,.1); --text: #f1f1f5; --text2: #9d9da8; --accent: #ff7a45; --on-accent: #1d0d05; --green: #3ddc84; }
+  @media (prefers-color-scheme: light) { :root { --bg: #f4efe9; --card: #fbf8f5; --stroke: rgba(0,0,0,.09); --text: #1c1b1f; --text2: #6b6a72; --accent: #e8662f; --on-accent: #fff; --green: #1f9d57; } }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 36px 20px; background: var(--bg); color: var(--text); font: 14.5px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", system-ui, sans-serif; }
+  .wrap { max-width: 960px; margin: 0 auto; }
+  .card { background: var(--card); border: 1px solid var(--stroke); border-radius: 16px; padding: 24px; margin-bottom: 18px; }
+  h1 { margin: 0 0 6px; font-size: 26px; font-weight: 650; }
+  p { margin: 0 0 14px; color: var(--text2); }
+  .badge { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; padding: 5px 11px; border-radius: 999px; border: 1px solid var(--stroke); margin-bottom: 14px; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 7px; vertical-align: middle; }
+  .dot.on { background: var(--green); }
+  .dot.off { background: var(--text2); opacity: .45; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  .btn { display: inline-flex; align-items: center; padding: 9px 14px; border-radius: 10px; font-weight: 600; font-size: 13.5px; text-decoration: none; cursor: pointer; border: 1px solid var(--stroke); background: transparent; color: var(--text); }
+  .btn.primary { background: var(--accent); color: var(--on-accent); border-color: transparent; }
+  table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
+  th, td { text-align: left; padding: 10px 8px; border-bottom: 1px solid var(--stroke); vertical-align: top; }
+  th { font-size: 11.5px; text-transform: uppercase; letter-spacing: .05em; color: var(--text2); }
+  code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; word-break: break-all; }
+  .muted { color: var(--text2); font-size: 12px; }
+  pre { margin: 14px 0 0; padding: 14px; border-radius: 10px; border: 1px solid var(--stroke); background: rgba(0,0,0,.18); overflow-x: auto; font: 12px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; display: none; }
+  pre.show { display: block; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <div class="badge"><span class="dot on" style="margin:0"></span> Online · Stateless · ${enabledCount} of ${ALL_PLATFORMS.length} platforms enabled</div>
+    <h1>SocialForge OAuth Relay</h1>
+    <p>Stateless OAuth 2.0 broker for SocialForge on macOS. Stores zero databases, zero user accounts, and zero tokens — single-use codes bounce directly back into your Mac app via <code>socialforge://oauth/callback</code>.</p>
+    <div class="row">
+      <button class="btn primary" id="run-test" type="button">Run Self-Test (/api/test)</button>
+      <a class="btn" href="/api/test">JSON /api/test</a>
+      <a class="btn" href="/api/health">JSON /api/health</a>
+      <a class="btn" href="/api/providers">JSON /api/providers</a>
+      <a class="btn" href="/api/test?simulate_callback=1">Test socialforge:// Bounce</a>
+    </div>
+    <pre id="test-output"></pre>
+  </div>
+
+  <div class="card">
+    <h2 style="margin:0 0 12px;font-size:17px">Configured Platforms &amp; HTTPS Callback URLs</h2>
+    <table>
+      <thead><tr><th>Platform</th><th>Status</th><th>HTTPS Callback URL</th><th>Required Vercel Env Vars</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>
+</div>
+<script>
+document.getElementById("run-test").addEventListener("click", function () {
+  var out = document.getElementById("test-output");
+  out.textContent = "Running GET /api/test…";
+  out.className = "show";
+  fetch("/api/test", { cache: "no-store" })
+    .then(function (r) { return r.json(); })
+    .then(function (data) { out.textContent = JSON.stringify(data, null, 2); })
+    .catch(function (err) { out.textContent = "Error: " + String(err); });
+});
+</script>
+</body>
+</html>`;
+  return html(page, 200);
+}
+
 // MARK: - GET /api/providers
 
 export async function handleProviders(request: Request, ctx: RelayContext = defaultCtx()): Promise<Response> {
